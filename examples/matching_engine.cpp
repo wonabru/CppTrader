@@ -578,6 +578,20 @@ int main(int argc, char** argv)
 {
     MyMarketHandler market_handler;
     MarketManager market(market_handler);
+    int id = 0;
+    float price = 0;
+    int quantity = 0; 
+    char *msg;
+
+    AddSymbol(market, "add symbol 1 BTCUSDT");
+    AddOrderBook(market, "add book 1");
+
+    for (int i=0;i<100;i++)
+    {
+        sprintf(msg, "add limit buy %d 1 %f %d", id, price, quantity);
+        AddLimitOrder(market, msg);
+        id++;
+    }
 
     // Perform text input
     std::string line;
