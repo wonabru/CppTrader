@@ -13,8 +13,11 @@
 #include <iostream>
 #include <regex>
 #include <string>
+#include <chrono>
 
 using namespace CppTrader::Matching;
+using namespace std;
+
 
 class MyMarketHandler : public MarketHandler
 {
@@ -201,26 +204,22 @@ void AddSlippageMarketOrder(MarketManager& market, const std::string& command)
     std::cerr << "Invalid 'add slippage market' command: " << command << std::endl;
 }
 
-void AddLimitOrder(MarketManager& market, const std::string& command)
+void AddLimitOrder(MarketManager& market,
+                    int is_buy,
+                    uint64_t id,
+                    uint32_t symbol_id,
+                    uint64_t price,
+                    uint64_t quantity)
 {
-    static std::regex pattern("^add limit (buy|sell) (\\d+) (\\d+) (\\d+) (\\d+)$");
-    std::smatch match;
-
-    if (std::regex_search(command, match, pattern))
-    {
-        uint64_t id = std::stoi(match[2]);
-        uint32_t symbol_id = std::stoi(match[3]);
-        uint64_t price = std::stoi(match[4]);
-        uint64_t quantity = std::stoi(match[5]);
 
         Order order;
-        if (match[1] == "buy")
+        if (is_buy == 1)
             order = Order::BuyLimit(id, symbol_id, price, quantity);
-        else if (match[1] == "sell")
+        else if (is_buy == 0)
             order = Order::SellLimit(id, symbol_id, price, quantity);
         else
         {
-            std::cerr << "Invalid limit order side: " << match[1] << std::endl;
+            std::cerr << "Invalid limit order side: " << is_buy << std::endl;
             return;
         }
 
@@ -229,9 +228,6 @@ void AddLimitOrder(MarketManager& market, const std::string& command)
             std::cerr << "Failed 'add limit' command: " << result << std::endl;
 
         return;
-    }
-
-    std::cerr << "Invalid 'add limit' command: " << command << std::endl;
 }
 
 void AddIOCLimitOrder(MarketManager& market, const std::string& command)
@@ -576,23 +572,57 @@ void DeleteOrder(MarketManager& market, const std::string& command)
 
 int main(int argc, char** argv)
 {
-    MyMarketHandler market_handler;
+    MarketHandler market_handler;
     MarketManager market(market_handler);
-    int id = 0;
-    float price = 0;
-    int quantity = 0; 
-    char *msg;
+    int id = 1;
+    int price;
+    int quantity;
+    // long start_time;
+    long txn_no = 10000000;
+    Order order;
+    ErrorCode result;
 
     AddSymbol(market, "add symbol 1 BTCUSDT");
     AddOrderBook(market, "add book 1");
 
-    for (int i=0;i<100;i++)
+    std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
+
+    for (int i=0;i<txn_no;i++)
     {
-        sprintf(msg, "add limit buy %d 1 %f %d", id, price, quantity);
-        AddLimitOrder(market, msg);
+        price = (int)(rand() * 100.0 / RAND_MAX);
+        quantity = (int)(rand() * 100.0 / RAND_MAX) + 1;
+        order = Order::BuyLimit(id, 1, price, quantity);
+        result = market.AddOrder(order);
+        if (result != ErrorCode::OK)
+            std::cerr << "Failed 'add limit' command: " << result << std::endl;
+        id++;
+        price = 200 - (int)(rand() * 100.0 / RAND_MAX);
+        quantity = (int)(rand() * 100.0 / RAND_MAX) + 1;
+        order = Order::SellLimit(id, 1, price, quantity);
+        result = market.AddOrder(order);
+        if (result != ErrorCode::OK)
+            std::cerr << "Failed 'add limit' command: " << result << std::endl;
+        id++;
+        // price = 200 - (int)(rand() * 100.0 / RAND_MAX);
+        quantity = (int)(rand() * 100.0 / RAND_MAX) + 1;
+        order = Order::BuyMarket(id, 1, quantity);
+        result = market.AddOrder(order);
+        if (result != ErrorCode::OK)
+            std::cerr << "Failed 'add limit' command: " << result << std::endl;
+        id++;
+        quantity = (int)(rand() * 100.0 / RAND_MAX) + 1;
+        order = Order::SellMarket(id, 1, quantity);
+        result = market.AddOrder(order);
+        if (result != ErrorCode::OK)
+            std::cerr << "Failed 'add limit' command: " << result << std::endl;
         id++;
     }
+    std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
 
+    int64_t time_diff = std::chrono::duration_cast<std::chrono::nanoseconds> (end - begin).count();
+    std::cout << "Time difference = " << time_diff / 4.0 / txn_no  << "[ns]" << std::endl;
+    cout << "TPS: " << txn_no * 4.0 / time_diff * 1e9 << endl;
+/*
     // Perform text input
     std::string line;
     while (getline(std::cin, line))
@@ -670,6 +700,6 @@ int main(int argc, char** argv)
         else
             std::cerr << "Unknown command: "  << line << std::endl;
     }
-
+*/
     return 0;
 }
