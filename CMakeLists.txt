@@ -30,7 +30,11 @@ include(SystemInformation)
 add_subdirectory("modules")
 
 # Link libraries
+find_library(STATIC_LIBS_HIREDIS NAMES libhiredis.a lhiredis)
+find_library(STATIC_LIBS_REDIS NAMES libredis++.a lredis++)
 list(APPEND LINKLIBS cppcommon)
+list(APPEND LINKLIBS ${STATIC_LIBS_REDIS})
+list(APPEND LINKLIBS ${STATIC_LIBS_HIREDIS})
 
 # System directories
 include_directories(SYSTEM "${CMAKE_CURRENT_SOURCE_DIR}/modules")
@@ -59,6 +63,7 @@ if(NOT CPPTRADER_MODULE)
     add_executable(${EXAMPLE_TARGET} ${EXAMPLE_HEADER_FILES} ${EXAMPLE_INLINE_FILES} "examples/${EXAMPLE_SOURCE_FILE}")
     set_target_properties(${EXAMPLE_TARGET} PROPERTIES COMPILE_FLAGS "${PEDANTIC_COMPILE_FLAGS}" FOLDER "examples")
     target_link_libraries(${EXAMPLE_TARGET} ${LINKLIBS})
+
     list(APPEND INSTALL_TARGETS ${EXAMPLE_TARGET})
     list(APPEND INSTALL_TARGETS_PDB ${EXAMPLE_TARGET})
   endforeach()
