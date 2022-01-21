@@ -197,6 +197,10 @@ struct Order
     */
     int64_t TrailingStep;
 
+    uint64_t AccountId = 0;
+
+    bool is_pending = false;
+
     Order() noexcept = default;
     Order(uint64_t id, uint32_t symbol, OrderType type, OrderSide side, uint64_t price, uint64_t stop_price, uint64_t quantity,
         OrderTimeInForce tif = OrderTimeInForce::GTC,

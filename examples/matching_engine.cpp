@@ -8,8 +8,9 @@
 
 #include "trader/matching/market_manager.h"
 #include "trader/redis_db.h"
-
+#include "trader/risk/position.h"
 #include "system/stream.h"
+#include "trader/matching/symbol.h"
 
 #include <iostream>
 #include <thread>
@@ -18,6 +19,7 @@
 #include <chrono>
 
 using namespace CppTrader::Matching;
+using namespace CppTrader::Risk;
 using namespace std;
 
 class CheckTime
@@ -52,6 +54,7 @@ public:
 
     MyRedis _redis = MyRedis();
     CheckTime ct = CheckTime();
+    unordered_map<uint32_t, Symbol> symbols = {};
 
 protected:
 
@@ -60,9 +63,13 @@ protected:
         std::cout << "Add symbol: " << symbol << std::endl;
         string key = "symbol:";
         key += to_string(symbol.Id);
-        std::unordered_map<std::string, std::string> val = {{"id", to_string(symbol.Id)}, {"name", symbol.Name}}; 
+        std::unordered_map<std::string, std::string> val = {{"id", to_string(symbol.Id)}, 
+                                                            {"name", symbol.Name},
+                                                            {"Type", to_string((uint8_t)symbol.Type)},
+                                                            {"Multiplier", to_string(symbol.Multiplier)}
+                                                            }; 
         _redis._hmset_db(key, val);
-
+        symbols[symbol.Id] = symbol;
         // printf("get: %s", _get_db(key).c_str());
     }
     void onDeleteSymbol(const Symbol& symbol) override
@@ -71,6 +78,7 @@ protected:
         string key = "symbol:";
         key += to_string(symbol.Id);
         _redis._del_db(key);
+        symbols.erase(symbol.Id);
     }
 
     void onAddOrderBook(const OrderBook& order_book) override
@@ -157,7 +165,7 @@ protected:
         string key = "funding_coeficient:";
         key += to_string(order_book.symbol().Id);
 
-        bool is_inverse = false; //TODO to change
+        bool is_inverse = Symbol::IsInverse(order_book.symbol().Type);
 
         auto _now = std::chrono::steady_clock::now().time_since_epoch();
         uint64_t _time = std::chrono::duration_cast<std::chrono::nanoseconds>(_now).count();
@@ -184,7 +192,7 @@ protected:
 
     void onUpdateOrderBook(const OrderBook& order_book, bool top) override
     { 
-        std::cout << "Update order book: " << order_book << (top ? " - Top of the book!" : "") << std::endl;
+        // std::cout << "Update order book: " << order_book << (top ? " - Top of the book!" : "") << std::endl;
         mark_price_db(order_book); 
     }
     // void onDeleteOrderBook(const OrderBook& order_book) override
@@ -192,19 +200,19 @@ protected:
 
     void onAddLevel(const OrderBook& order_book, const Level& level, bool top) override
     { 
-        std::cout << "Add level: " << level << (top ? " - Top of the book!" : "") << std::endl;
+        // std::cout << "Add level: " << level << (top ? " - Top of the book!" : "") << std::endl;
         if (top)
             mark_price_db(order_book);  
     }
     void onUpdateLevel(const OrderBook& order_book, const Level& level, bool top) override
     { 
-        std::cout << "Update level: " << level << (top ? " - Top of the book!" : "") << std::endl;
+        // std::cout << "Update level: " << level << (top ? " - Top of the book!" : "") << std::endl;
         if (top)
             mark_price_db(order_book);  
     }
     void onDeleteLevel(const OrderBook& order_book, const Level& level, bool top) override
     { 
-        std::cout << "Delete level: " << level << (top ? " - Top of the book!" : "") << std::endl; 
+        // std::cout << "Delete level: " << level << (top ? " - Top of the book!" : "") << std::endl; 
         if (top)
             mark_price_db(order_book); 
     }
@@ -222,7 +230,8 @@ protected:
         
         auto _time = (uint64_t)(std::chrono::steady_clock::now().time_since_epoch() / std::chrono::nanoseconds(1));
 
-        std::unordered_map<std::string, std::string> val = {{"SymbolId", to_string(order.SymbolId)}, 
+        std::unordered_map<std::string, std::string> val = {{"Id", to_string(order.Id)},
+                                                            {"SymbolId", to_string(order.SymbolId)}, 
                                                             {"ExecutedQuantity", to_string(order.ExecutedQuantity)},
                                                             {"LeavesQuantity", to_string(order.LeavesQuantity)},
                                                             {"MaxVisibleQuantity", to_string(order.MaxVisibleQuantity)},
@@ -235,14 +244,40 @@ protected:
                                                             {"TrailingDistance", to_string(order.TrailingDistance)},
                                                             {"TrailingStep", to_string(order.TrailingStep)},
                                                             {"Type", Type_str.str()},
-                                                            {"Time", to_string(_time)}
+                                                            {"Time", to_string(_time)},
+                                                            {"AccountId", to_string(order.AccountId)}
+                                                            };
+        return val; 
+    }
+
+    std::unordered_map<std::string, std::string> position_prep(const Position& position)
+    {        
+        stringstream side_str;
+        side_str << position.Side;
+        
+        auto _time = (uint64_t)(std::chrono::steady_clock::now().time_since_epoch() / std::chrono::nanoseconds(1));
+
+        std::unordered_map<std::string, std::string> val = {{"Id", to_string(position.Id)},
+                                                            {"SymbolId", to_string(position.SymbolId)},
+                                                            {"Price", to_string(position.AvgEntryPrice)},
+                                                            {"Quantity", to_string(position.Quantity)},
+                                                            {"Side", side_str.str()},
+                                                            {"Time", to_string(_time)},
+                                                            {"AccountId", to_string(position.AccountId)},
+                                                            {"Z", to_string(position.Z)},
+                                                            {"C", to_string(position.C)},
+                                                            {"Funding", to_string(position.Funding)},
+                                                            {"MarkPrice", to_string(position.MarkPrice)},
+                                                            {"IndexPrice", to_string(position.IndexPrice)},
+                                                            {"RealizedPnL", to_string(position.RealizedPnL)},
+                                                            {"UnrealizedPnL", to_string(position.UnrealizedPnL)}
                                                             };
         return val; 
     }
 
     void onAddOrder(const Order& order) override
     { 
-        std::cout << "Add order: " << order << std::endl; 
+        // std::cout << "Add order: " << order << std::endl; 
 
         // vec = _lrange_db(key);
         // for (std::vector<string>::iterator it = vec.begin() ; it != vec.end(); ++it)
@@ -268,7 +303,7 @@ protected:
 
     void onUpdateOrder(const Order& order) override
     { 
-        std::cout << "Update order: " << order << std::endl;
+        // std::cout << "Update order: " << order << std::endl;
         string key = "order:";
         key += to_string(order.Id);
         
@@ -285,7 +320,7 @@ protected:
     }
     void onDeleteOrder(const Order& order) override
     { 
-        std::cout << "Delete order: " << order << std::endl;
+        // std::cout << "Delete order: " << order << std::endl;
         string key = "order:";
         key += to_string(order.Id);
         _redis._del_db(key); 
@@ -307,7 +342,7 @@ protected:
 
     void onExecuteOrder(const Order& order, uint64_t price, uint64_t quantity) override
     { 
-        std::cout << "Execute order: " << order << std::endl;
+        // std::cout << "Execute order: " << order << std::endl;
         string key = "execute:";
         key += to_string(order.Id);
 
@@ -322,67 +357,86 @@ protected:
 
         _redis._append_db(key, vec);
 
+        key = "position:";
+        key += to_string(order.AccountId);
+        key += ":" + to_string(order.SymbolId);
+
+        std::unordered_map<std::string, std::string> data = _redis._hgetall_db(key);
+        Position last_pos, curr_pos;
+        last_pos = last_pos.ReadDbStructure(data);
+        curr_pos = last_pos.OrderExecuted(last_pos, order, price, quantity, symbols[order.SymbolId]);
+        val = position_prep(curr_pos);
+
+        _redis._hmset_db(key, val);
+
+        key = "positions";
+        vector<string> vec_str = {val["Time"]};
+
+        _redis._append_db(key, vec_str);
     }
 
 };
 
-void AddSymbol(MarketManager& market, const std::string& command)
-{
-    static std::regex pattern("^add symbol (\\d+) (.+)$");
-    std::smatch match;
+// void AddSymbol(MarketManager& market, const std::string& command)
+// {
+//     static std::regex pattern("^add symbol (\\d+) (.+)$ (\\d+) (\\d+)");
+//     std::smatch match;
 
-    if (std::regex_search(command, match, pattern))
-    {
-        uint32_t id = std::stoi(match[1]);
+//     if (std::regex_search(command, match, pattern))
+//     {
+//         uint32_t id = std::stoi(match[1]);
 
-        char name[8];
-        std::string sname = match[2];
-        std::memcpy(name, sname.data(), std::min(sname.size(), sizeof(name)));
+//         char name[8];
+//         std::string sname = match[2];
+//         std::memcpy(name, sname.data(), std::min(sname.size(), sizeof(name)));
+//         SymbolType type = SymbolType(std::stoi(match[3]));
+//         uint64_t multiplier = std::stoul(match[4]);
 
-        Symbol symbol(id, name);
+//         Symbol symbol(id, name, type, multiplier);
 
-        ErrorCode result = market.AddSymbol(symbol);
-        if (result != ErrorCode::OK)
-            std::cerr << "Failed 'add symbol' command: " << result << std::endl;
+//         ErrorCode result = market.AddSymbol(symbol);
+//         if (result != ErrorCode::OK)
+//             std::cerr << "Failed 'add symbol' command: " << result << std::endl;
 
-        return;
-    }
+//         return;
+//     }
 
-    std::cerr << "Invalid 'add symbol' command: " << command << std::endl;
-}
+//     std::cerr << "Invalid 'add symbol' command: " << command << std::endl;
+// }
 
-void DeleteSymbol(MarketManager& market, const std::string& command)
-{
-    static std::regex pattern("^delete symbol (\\d+)$");
-    std::smatch match;
+// void DeleteSymbol(MarketManager& market, const std::string& command)
+// {
+//     static std::regex pattern("^delete symbol (\\d+)$");
+//     std::smatch match;
 
-    if (std::regex_search(command, match, pattern))
-    {
-        uint32_t id = std::stoi(match[1]);
+//     if (std::regex_search(command, match, pattern))
+//     {
+//         uint32_t id = std::stoi(match[1]);
 
-        ErrorCode result = market.DeleteSymbol(id);
-        if (result != ErrorCode::OK)
-            std::cerr << "Failed 'delete symbol' command: " << result << std::endl;
+//         ErrorCode result = market.DeleteSymbol(id);
+//         if (result != ErrorCode::OK)
+//             std::cerr << "Failed 'delete symbol' command: " << result << std::endl;
 
-        return;
-    }
+//         return;
+//     }
 
-    std::cerr << "Invalid 'delete symbol' command: " << command << std::endl;
-}
+//     std::cerr << "Invalid 'delete symbol' command: " << command << std::endl;
+// }
 
 void AddOrderBook(MarketManager& market, const std::string& command)
 {
-    static std::regex pattern("^add book (\\d+)$");
+    static std::regex pattern("^add book (\\d+ \\d+ \\d+)$");
     std::smatch match;
 
     if (std::regex_search(command, match, pattern))
     {
         uint32_t id = std::stoi(match[1]);
-
+        SymbolType type = SymbolType(std::stoi(match[2]));
+        uint64_t multiplier = std::stoi(match[3]);
         char name[8];
         std::memset(name, 0, sizeof(name));
 
-        Symbol symbol(id, name);
+        Symbol symbol(id, name, type, multiplier);
 
         ErrorCode result = market.AddOrderBook(symbol);
         if (result != ErrorCode::OK)
@@ -399,25 +453,44 @@ int main(int argc, char** argv)
     MyMarketHandler market_handler = MyMarketHandler();
     MarketManager market(market_handler);
     int id = market_handler.last_index("orders");
-
+    uint64_t account_id;
     cout << "id: " << id << endl;
     int price;
     int quantity;
     // long start_time;
-    long txn_no = 100;
+    long txn_no = 1000;
     Order order;
     ErrorCode result;
 
-    AddSymbol(market, "add symbol 1 BTCUSDT");
-    AddOrderBook(market, "add book 1");
+    uint32_t idSymbol = 1;
+    char name[8]{"BTCUSDT"};
+
+    SymbolType type = SymbolType::VANILLAPERP;
+    uint64_t multiplier = 2;
+
+    Symbol symbol(idSymbol, name, type, multiplier);
+
+    result = market.AddSymbol(symbol);
+    if (result != ErrorCode::OK)
+        std::cerr << "Failed 'add symbol' command: " << result << std::endl;
+
+    result = market.AddOrderBook(symbol);
+    if (result != ErrorCode::OK)
+        std::cerr << "Failed 'add book' command: " << result << std::endl;
+    
+    
+    market.EnableMatching();
 
     std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
 
     for (int i=0;i<txn_no;i++)
     {
+        
         price = (int)(rand() * 100.0 / RAND_MAX);
         quantity = (int)(rand() * 100.0 / RAND_MAX) + 1;
         order = Order::BuyLimit(id, 1, price, quantity);
+        account_id = (int)(rand() * 10.0 / RAND_MAX);
+        order.AccountId = account_id;
         result = market.AddOrder(order);
         if (result != ErrorCode::OK)
             std::cerr << "Failed 'add limit' command: " << result << std::endl;
@@ -425,6 +498,8 @@ int main(int argc, char** argv)
         price = 200 - (int)(rand() * 100.0 / RAND_MAX);
         quantity = (int)(rand() * 100.0 / RAND_MAX) + 1;
         order = Order::SellLimit(id, 1, price, quantity);
+        account_id = (int)(rand() * 10.0 / RAND_MAX);
+        order.AccountId = account_id;
         result = market.AddOrder(order);
         if (result != ErrorCode::OK)
             std::cerr << "Failed 'add limit' command: " << result << std::endl;
@@ -432,12 +507,16 @@ int main(int argc, char** argv)
         // price = 200 - (int)(rand() * 100.0 / RAND_MAX);
         quantity = (int)(rand() * 100.0 / RAND_MAX) + 1;
         order = Order::BuyMarket(id, 1, quantity);
+        account_id = (int)(rand() * 10.0 / RAND_MAX);
+        order.AccountId = account_id;
         result = market.AddOrder(order);
         if (result != ErrorCode::OK)
             std::cerr << "Failed 'add limit' command: " << result << std::endl;
         id++;
         quantity = (int)(rand() * 100.0 / RAND_MAX) + 1;
         order = Order::SellMarket(id, 1, quantity);
+        account_id = (int)(rand() * 10.0 / RAND_MAX);
+        order.AccountId = account_id;
         result = market.AddOrder(order);
         if (result != ErrorCode::OK)
             std::cerr << "Failed 'add limit' command: " << result << std::endl;
