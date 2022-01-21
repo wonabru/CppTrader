@@ -423,42 +423,42 @@ protected:
 //     std::cerr << "Invalid 'delete symbol' command: " << command << std::endl;
 // }
 
-void AddOrderBook(MarketManager& market, const std::string& command)
-{
-    static std::regex pattern("^add book (\\d+ \\d+ \\d+)$");
-    std::smatch match;
+// void AddOrderBook(MarketManager& market, const std::string& command)
+// {
+//     static std::regex pattern("^add book (\\d+ \\d+ \\d+)$");
+//     std::smatch match;
 
-    if (std::regex_search(command, match, pattern))
-    {
-        uint32_t id = std::stoi(match[1]);
-        SymbolType type = SymbolType(std::stoi(match[2]));
-        uint64_t multiplier = std::stoi(match[3]);
-        char name[8];
-        std::memset(name, 0, sizeof(name));
+//     if (std::regex_search(command, match, pattern))
+//     {
+//         uint32_t id = std::stoi(match[1]);
+//         SymbolType type = SymbolType(std::stoi(match[2]));
+//         uint64_t multiplier = std::stoi(match[3]);
+//         char name[8];
+//         std::memset(name, 0, sizeof(name));
 
-        Symbol symbol(id, name, type, multiplier);
+//         Symbol symbol(id, name, type, multiplier);
 
-        ErrorCode result = market.AddOrderBook(symbol);
-        if (result != ErrorCode::OK)
-            std::cerr << "Failed 'add book' command: " << result << std::endl;
+//         ErrorCode result = market.AddOrderBook(symbol);
+//         if (result != ErrorCode::OK)
+//             std::cerr << "Failed 'add book' command: " << result << std::endl;
 
-        return;
-    }
+//         return;
+//     }
 
-    std::cerr << "Invalid 'add book' command: " << command << std::endl;
-}
+//     std::cerr << "Invalid 'add book' command: " << command << std::endl;
+// }
 
 int main(int argc, char** argv)
 {
-    MyMarketHandler market_handler = MyMarketHandler();
+    MarketHandler market_handler = MarketHandler();
     MarketManager market(market_handler);
-    int id = market_handler.last_index("orders");
+    int id = 1; //market_handler.last_index("orders");
     uint64_t account_id;
     cout << "id: " << id << endl;
     int price;
     int quantity;
     // long start_time;
-    long txn_no = 1000;
+    long txn_no = 10000000;
     Order order;
     ErrorCode result;
 
