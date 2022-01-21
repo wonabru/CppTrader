@@ -486,8 +486,8 @@ int main(int argc, char** argv)
     for (int i=0;i<txn_no;i++)
     {
         
-        price = (int)(rand() * 100.0 / RAND_MAX);
-        quantity = (int)(rand() * 100.0 / RAND_MAX) + 1;
+        price = (int)(rand() * 10000.0 / RAND_MAX);
+        quantity = (int)(rand() * 1000.0 / RAND_MAX) + 1;
         order = Order::BuyLimit(id, 1, price, quantity);
         account_id = (int)(rand() * 10.0 / RAND_MAX);
         order.AccountId = account_id;
@@ -495,8 +495,8 @@ int main(int argc, char** argv)
         if (result != ErrorCode::OK)
             std::cerr << "Failed 'add limit' command: " << result << std::endl;
         id++;
-        price = 200 - (int)(rand() * 100.0 / RAND_MAX);
-        quantity = (int)(rand() * 100.0 / RAND_MAX) + 1;
+        price = 200 - (int)(rand() * 10000.0 / RAND_MAX);
+        quantity = (int)(rand() * 1000.0 / RAND_MAX) + 1;
         order = Order::SellLimit(id, 1, price, quantity);
         account_id = (int)(rand() * 10.0 / RAND_MAX);
         order.AccountId = account_id;
@@ -525,9 +525,16 @@ int main(int argc, char** argv)
     std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
 
     int64_t time_diff = std::chrono::duration_cast<std::chrono::nanoseconds> (end - begin).count();
+    cout << "No of orders send: " << txn_no * 4 << endl;
     std::cout << "Time difference = " << time_diff / 4.0 / txn_no  << "[ns]" << std::endl;
     cout << "TPS: " << txn_no * 4.0 / time_diff * 1e9 << endl;
-
+    CppTrader::Matching::MarketManager::OrderBooks ob = market.order_books();
+    if (ob.size())
+    {
+        cout << ob.size() << endl;
+        auto ob_btcusdt = ob[1];
+        cout << "Bids level size: " << ob_btcusdt->bids().size() <<  "; Asks level size: " << ob_btcusdt->asks().size() << endl;
+    }
     return 0;
 }
 
