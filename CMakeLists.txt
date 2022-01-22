@@ -2,6 +2,8 @@ cmake_minimum_required(VERSION 3.20)
 
 # Global properties
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
+# set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -m32 -L/usr/lib32")
+# set(CMAKE_C_FLAGS   "${CMAKE_C_FLAGS} -m32 -L/usr/lib32")
 
 # Project name
 project(cpptrader)
@@ -20,6 +22,8 @@ endif()
 # CMake module path
 set(CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
+file(GLOB K_TARGET "bin/c.o")
+
 # Compiler features
 include(SetCompilerFeatures)
 include(SetCompilerWarnings)
@@ -36,6 +40,7 @@ list(APPEND LINKLIBS cppcommon)
 list(APPEND LINKLIBS ${STATIC_LIBS_REDIS})
 list(APPEND LINKLIBS ${STATIC_LIBS_HIREDIS})
 
+
 # System directories
 include_directories(SYSTEM "${CMAKE_CURRENT_SOURCE_DIR}/modules")
 
@@ -44,9 +49,11 @@ file(GLOB_RECURSE LIB_HEADER_FILES "include/*.h" "source/*.h")
 file(GLOB_RECURSE LIB_INLINE_FILES "include/*.inl" "source/*.inl")
 file(GLOB_RECURSE LIB_SOURCE_FILES "include/*.cpp" "source/*.cpp")
 add_library(cpptrader ${LIB_HEADER_FILES} ${LIB_INLINE_FILES} ${LIB_SOURCE_FILES})
-set_target_properties(cpptrader PROPERTIES COMPILE_FLAGS "${PEDANTIC_COMPILE_FLAGS}" FOLDER "libraries")
+
+set_target_properties(cpptrader PROPERTIES FOLDER "libraries")  # COMPILE_FLAGS "${PEDANTIC_COMPILE_FLAGS}"
 target_include_directories(cpptrader PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_link_libraries(cpptrader ${LINKLIBS})
+
 list(APPEND INSTALL_TARGETS cpptrader)
 list(APPEND LINKLIBS cpptrader)
 
@@ -60,12 +67,13 @@ if(NOT CPPTRADER_MODULE)
   foreach(EXAMPLE_SOURCE_FILE ${EXAMPLE_SOURCE_FILES})
     string(REGEX REPLACE "(.*)\\.cpp" "\\1" EXAMPLE_NAME ${EXAMPLE_SOURCE_FILE})
     set(EXAMPLE_TARGET "cpptrader-example-${EXAMPLE_NAME}")
-    add_executable(${EXAMPLE_TARGET} ${EXAMPLE_HEADER_FILES} ${EXAMPLE_INLINE_FILES} "examples/${EXAMPLE_SOURCE_FILE}")
-    set_target_properties(${EXAMPLE_TARGET} PROPERTIES COMPILE_FLAGS "${PEDANTIC_COMPILE_FLAGS}" FOLDER "examples")
+    add_executable(${EXAMPLE_TARGET} ${EXAMPLE_HEADER_FILES} ${EXAMPLE_INLINE_FILES} ${K_TARGET} "examples/${EXAMPLE_SOURCE_FILE}" )
+    set_target_properties(${EXAMPLE_TARGET} PROPERTIES FOLDER "examples")  # COMPILE_FLAGS "${PEDANTIC_COMPILE_FLAGS}"
     target_link_libraries(${EXAMPLE_TARGET} ${LINKLIBS})
 
     list(APPEND INSTALL_TARGETS ${EXAMPLE_TARGET})
     list(APPEND INSTALL_TARGETS_PDB ${EXAMPLE_TARGET})
+    
   endforeach()
 
   # Benchmarks
@@ -76,7 +84,7 @@ if(NOT CPPTRADER_MODULE)
     string(REGEX REPLACE "(.*)\\.cpp" "\\1" BENCHMARK_NAME ${BENCHMARK_SOURCE_FILE})
     set(BENCHMARK_TARGET "cpptrader-performance-${BENCHMARK_NAME}")
     add_executable(${BENCHMARK_TARGET} ${BENCHMARK_HEADER_FILES} ${BENCHMARK_INLINE_FILES} "performance/${BENCHMARK_SOURCE_FILE}")
-    set_target_properties(${BENCHMARK_TARGET} PROPERTIES COMPILE_FLAGS "${PEDANTIC_COMPILE_FLAGS}" FOLDER "performance")
+    set_target_properties(${BENCHMARK_TARGET} PROPERTIES FOLDER "performance") # COMPILE_FLAGS "${PEDANTIC_COMPILE_FLAGS}"
     target_link_libraries(${BENCHMARK_TARGET} ${LINKLIBS} cppbenchmark)
     list(APPEND INSTALL_TARGETS ${BENCHMARK_TARGET})
     list(APPEND INSTALL_TARGETS_PDB ${BENCHMARK_TARGET})

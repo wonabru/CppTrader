@@ -1176,8 +1176,8 @@ void MarketManager::MatchMarket(OrderBook* order_book_ptr, Order* order_ptr)
             return;
 
         order_ptr->Price = order_book_ptr->best_ask()->Price;
-        if (order_ptr->Price > (std::numeric_limits<uint64_t>::max() - order_ptr->Slippage))
-            order_ptr->Price = std::numeric_limits<uint64_t>::max();
+        if (order_ptr->Price > (ORDER_INT_MAX - order_ptr->Slippage))
+            order_ptr->Price = ORDER_INT_MAX;
         else
             order_ptr->Price += order_ptr->Slippage;
     }
@@ -1188,8 +1188,8 @@ void MarketManager::MatchMarket(OrderBook* order_book_ptr, Order* order_ptr)
             return;
 
         order_ptr->Price = order_book_ptr->best_bid()->Price;
-        if (order_ptr->Price < (std::numeric_limits<uint64_t>::min() + order_ptr->Slippage))
-            order_ptr->Price = std::numeric_limits<uint64_t>::min();
+        if (order_ptr->Price < (ORDER_INT_MAX + order_ptr->Slippage))
+            order_ptr->Price = ORDER_INT_MAX;
         else
             order_ptr->Price -= order_ptr->Slippage;
     }

@@ -14,6 +14,7 @@
 #include "../matching/symbol.h"
 #include "containers/list.h"
 #include "utility/iostream.h"
+#include "../kdb/c/c/k.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -64,18 +65,18 @@ namespace CppTrader
             uint64_t IndexPrice;
 
             //funding coeficients
-            double Z;
-            double C;
-            double Funding;
+            float RiskZ;
+            float RiskC;
+            float Funding;
 
-            double RealizedPnL;
-            double UnrealizedPnL;
+            float RealizedPnL;
+            float UnrealizedPnL;
 
             Position() noexcept = default;
             Position(uint64_t id, uint32_t symbol, PositionSide side, uint64_t price, uint64_t quantity,
                      uint64_t accountId, uint64_t markPrice, uint64_t indexPrice,
-                     double z=0, double c=0, double funding=0, double realizedPnL=0,
-                     double unrealizedPnL=0) noexcept;
+                     float z=0, float c=0, float funding=0, float realizedPnL=0,
+                     float unrealizedPnL=0) noexcept;
             Position(const Position &) noexcept = default;
             Position(Position &&) noexcept = default;
             ~Position() noexcept = default;
@@ -87,7 +88,7 @@ namespace CppTrader
             friend TOutputStream &operator<<(TOutputStream &stream, const Position &position);
             static double* CalculatePnL(const Position &position, const CppTrader::Matching::Order &order, uint64_t price, uint64_t quantity, const CppTrader::Matching::Symbol &symbol) noexcept;
             Position OrderExecuted(const Position &position, const CppTrader::Matching::Order &order, uint64_t price, uint64_t quantity, const CppTrader::Matching::Symbol &symbol) noexcept;
-            Position ReadDbStructure(std::unordered_map<std::string, std::string> data) noexcept;
+            Position ReadDbStructure(K data, Kdbp kdb) noexcept;
         };
     } // namespace risk
 } // namespace CppTrader

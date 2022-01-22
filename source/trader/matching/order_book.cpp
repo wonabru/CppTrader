@@ -5,7 +5,6 @@
     \date 02.08.2017
     \copyright MIT License
 */
-
 #include "trader/matching/market_manager.h"
 #include "trader/matching/order_book.h"
 
@@ -22,11 +21,11 @@ OrderBook::OrderBook(MarketManager& manager, const Symbol& symbol)
       _best_trailing_buy_stop(nullptr),
       _best_trailing_sell_stop(nullptr),
       _last_bid_price(0),
-      _last_ask_price(std::numeric_limits<uint64_t>::max()),
+      _last_ask_price(ORDER_INT_MAX),
       _matching_bid_price(0),
-      _matching_ask_price(std::numeric_limits<uint64_t>::max()),
+      _matching_ask_price(ORDER_INT_MAX),
       _trailing_bid_price(0),
-      _trailing_ask_price(std::numeric_limits<uint64_t>::max())
+      _trailing_ask_price(ORDER_INT_MAX)
 {
 }
 
@@ -496,7 +495,7 @@ uint64_t OrderBook::CalculateTrailingStopPrice(const Order& order) const noexcep
     if (order.IsBuy())
     {
         // Calculate a new stop price
-        uint64_t new_price = (market_price < (std::numeric_limits<uint64_t>::max() - trailing_distance)) ? (market_price + trailing_distance) : std::numeric_limits<uint64_t>::max();
+        uint64_t new_price = (market_price < (ORDER_INT_MAX - trailing_distance)) ? (market_price + trailing_distance) : ORDER_INT_MAX;
 
         // If the new price is better and we get through the trailing step
         if (new_price < old_price)

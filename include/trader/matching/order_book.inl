@@ -117,7 +117,7 @@ inline uint64_t OrderBook::GetMarketPriceBid() const noexcept
 inline uint64_t OrderBook::GetMarketPriceAsk() const noexcept
 {
     uint64_t matching_price = _matching_ask_price;
-    uint64_t best_price = (_best_ask != nullptr) ? _best_ask->Price : std::numeric_limits<uint64_t>::max();
+    uint64_t best_price = (_best_ask != nullptr) ? _best_ask->Price : ORDER_INT_MAX;
     return std::min(matching_price, best_price);
 }
 
@@ -131,7 +131,7 @@ inline uint64_t OrderBook::GetMarketTrailingStopPriceBid() const noexcept
 inline uint64_t OrderBook::GetMarketTrailingStopPriceAsk() const noexcept
 {
     uint64_t last_price = _last_ask_price;
-    uint64_t best_price = (_best_ask != nullptr) ? _best_ask->Price : std::numeric_limits<uint64_t>::max();
+    uint64_t best_price = (_best_ask != nullptr) ? _best_ask->Price : ORDER_INT_MAX;
     return std::max(last_price, best_price);
 }
 
@@ -154,7 +154,7 @@ inline void OrderBook::UpdateMatchingPrice(const Order& order, uint64_t price) n
 inline void OrderBook::ResetMatchingPrice() noexcept
 {
     _matching_bid_price = 0;
-    _matching_ask_price = std::numeric_limits<uint64_t>::max();
+    _matching_ask_price = ORDER_INT_MAX;
 }
 
 } // namespace Matching

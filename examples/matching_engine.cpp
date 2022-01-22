@@ -5,9 +5,10 @@
     \date 16.08.2017
     \copyright MIT License
 */
+#define ORDER_INT_MAX 100000000UL
 
 #include "trader/matching/market_manager.h"
-#include "trader/redis_db.h"
+#include "trader/kdbp_db.h"
 #include "trader/risk/position.h"
 #include "system/stream.h"
 #include "trader/matching/symbol.h"
@@ -17,6 +18,8 @@
 #include <regex>
 #include <string>
 #include <chrono>
+
+
 
 using namespace CppTrader::Matching;
 using namespace CppTrader::Risk;
@@ -28,8 +31,9 @@ private:
     std::chrono::steady_clock::time_point _begin;
     std::chrono::steady_clock::time_point _end;
     string _name = "";
+
 public:
-    void start(const string& name)
+    void start(const string &name)
     {
         _begin = std::chrono::steady_clock::now();
         _name = name;
@@ -37,61 +41,109 @@ public:
     void end()
     {
         _end = std::chrono::steady_clock::now();
-        int64_t time_diff = std::chrono::duration_cast<std::chrono::nanoseconds> (_end - _begin).count();
-        std::cout << _name << ": Time = " << time_diff  << "[ns]" << std::endl;
+        int64_t time_diff = std::chrono::duration_cast<std::chrono::nanoseconds>(_end - _begin).count();
+        std::cout << _name << ": Time = " << time_diff << "[ns]" << std::endl;
     }
 };
 
+static I handleOk(I handle)
+{
+    if(handle > 0)
+        return 1;
+    if(handle == 0)
+        fprintf(stderr, "Authentication error %d\n", handle);
+    else if(handle == -1)
+        fprintf(stderr, "Connection error %d\n", handle);
+    else if(handle == -2)
+        fprintf(stderr, "Timeout error %d\n", handle);
+    return 0;
+}
 
 class MyMarketHandler : public MarketHandler
 {
 public:
-
-    uint64_t last_index(const string& type)
+    uint64_t last_index(const string &type)
     {
-        return _redis._get_last_index(type);
+        //should be last index of rows
+        return 1;
     }
 
-    MyRedis _redis = MyRedis();
+    Kdbp _kdb;
     CheckTime ct = CheckTime();
     unordered_map<uint32_t, Symbol> symbols = {};
+    MyMarketHandler(I kdb): _kdb(Kdbp(kdb)){}
+    MyMarketHandler() noexcept = delete;
+    void createTables(const Symbol &symbol)
+    {
+
+        string _query = "meta symbols:([] Time:`long$(); Id:`short$(); Name:`symbol$(); Type:`short$(); Multiplier:`int$())";
+
+        _kdb.executeQuery(_query);
+
+        _query = "meta prices:([] Time:`long$(); SymbolId:`short$(); MarkPrice:`long$(); IndexPrice:`long$(); BestBid:`long$(); BestAsk:`long$(); RiskZ:`float$(); RiskC:`float$())";
+
+        _kdb.executeQuery(_query);
+
+        _query = "meta orders:([] Id:`long$(); SymbolId:`short$(); ExecutedQuantity:`long$(); LeavesQuantity:`long$(); MaxVisibleQuantity:`long$(); ";
+        _query += "Price:`long$(); Quantity:`long$(); Side:`short$(); Slippage:`long$(); StopPrice:`long$(); TimeInForce:`short$(); TrailingDistance:`long$(); ";
+        _query += "TrailingStep:`long$(); Type:(); Time:`long$(); AccountId:`long$(); CurrentExecutedPrice:`long$(); CurrentExecutedQuantity:`long$())";
+        _kdb.executeQuery(_query);
+
+        _query = "meta transactions:([] Id:`long$(); SymbolId:`short$(); ExecutedQuantity:`long$(); LeavesQuantity:`long$(); MaxVisibleQuantity:`long$(); ";
+        _query += "Price:`long$(); Quantity:`long$(); Side:`short$(); Slippage:`long$(); StopPrice:`long$(); TimeInForce:`short$(); TrailingDistance:`long$(); ";
+        _query += "TrailingStep:`long$(); Type:(); Time:`long$(); AccountId:`long$(); CurrentExecutedPrice:`long$(); CurrentExecutedQuantity:`long$())";
+        _kdb.executeQuery(_query);
+
+        _query = "meta positions:([] Id:`long$(); SymbolId:`short$(); AvgEntryPrice:`long$(); Quantity:`long$(); Side:`short$(); ";
+        _query += "Time:`long$(); AccountId:`long$(); RiskZ:`float$(); RiskC:`float$(); Funding:`float$(); MarkPrice:`long$(); IndexPrice:`long$(); ";
+        _query += "RealizedPnL:`float$(); UnrealizedPnL:`float$())";
+        _kdb.executeQuery(_query);
+
+    }
 
 protected:
-
-    void onAddSymbol(const Symbol& symbol) override
-    { 
+    void onAddSymbol(const Symbol &symbol) override
+    {
         std::cout << "Add symbol: " << symbol << std::endl;
-        string key = "symbol:";
-        key += to_string(symbol.Id);
-        std::unordered_map<std::string, std::string> val = {{"id", to_string(symbol.Id)}, 
-                                                            {"name", symbol.Name},
-                                                            {"Type", to_string((uint8_t)symbol.Type)},
-                                                            {"Multiplier", to_string(symbol.Multiplier)}
-                                                            }; 
-        _redis._hmset_db(key, val);
+        time_t currentTime;
+        struct tm *ct;
+        string _query = "insert";
+        string _table = "symbols";
+        time(&currentTime);
+        ct = localtime(&currentTime);
+        K row = knk(5,
+                    kj(_kdb.castTime(ct)),
+                    kh(symbol.Id),
+                    ks(S(symbol.Name)),
+                    kh((uint8_t)symbol.Type),
+                    ki(symbol.Multiplier));
+
+        _kdb.insertRow(_query, _table, row);
         symbols[symbol.Id] = symbol;
-        // printf("get: %s", _get_db(key).c_str());
     }
-    void onDeleteSymbol(const Symbol& symbol) override
-    { 
-        std::cout << "Delete symbol: " << symbol << std::endl; 
-        string key = "symbol:";
-        key += to_string(symbol.Id);
-        _redis._del_db(key);
+
+    void onDeleteSymbol(const Symbol &symbol) override
+    {
+        std::cout << "Delete symbol: " << symbol << std::endl;
+        string _query = "delete";
+        string _table = "symbol";
+        // _kdb.deleteRow(_query, _table, row);
         symbols.erase(symbol.Id);
     }
 
-    void onAddOrderBook(const OrderBook& order_book) override
-    { 
-        std::cout << "Add order book: " << order_book << std::endl; 
+    void onAddOrderBook(const OrderBook &order_book) override
+    {
+        std::cout << "Add order book: " << order_book << std::endl;
     }
 
-    uint64_t calc_mark_price(const OrderBook& order_book)
+    uint64_t calc_mark_price(const OrderBook &order_book)
     {
         if (!order_book.bids().empty() && !order_book.asks().empty())
         {
             return (uint64_t)std::lround((order_book.best_ask()->Price + order_book.best_bid()->Price) / 2.0);
-        }else{
+        }
+        else
+        {
             return 0;
         }
     }
@@ -113,268 +165,216 @@ protected:
     vector<double> funding_coeficient(uint64_t mark_price, uint64_t index_price, bool is_inverse)
     {
         double fr = funding_rate(mark_price, index_price, is_inverse);
-        double Z = std::abs(fr);
-        double c = fr * fr;
+        double riskZ = std::abs(fr);
+        double riskC = fr * fr;
         if (!is_inverse)
         {
-            Z *= mark_price; // vanilla
-            c *= mark_price * mark_price;
-        }else{
-            Z /= index_price; // inverse
-            c /= index_price * index_price;
+            riskZ *= mark_price; // vanilla
+            riskC *= mark_price * mark_price;
         }
-        return vector<double>{Z, c};
+        else
+        {
+            riskZ /= index_price; // inverse
+            riskC /= index_price * index_price;
+        }
+        return vector<double>{riskZ, riskC};
     }
 
-    void mark_price_db(const OrderBook& order_book)
+    void mark_price_db(const OrderBook &order_book)
     {
-        string key = "mark_price:";
-        key += to_string(order_book.symbol().Id);
-
+        string _table = "prices";
+        string _query = "insert";
+        // ct.start("mark price calc");
         auto _mark_price = calc_mark_price(order_book);
+        // ct.end();
         auto _now = std::chrono::steady_clock::now().time_since_epoch();
         uint64_t _time = std::chrono::duration_cast<std::chrono::nanoseconds>(_now).count();
-        key += ":" + to_string(_time);
-        
+
         //TODO
-        uint64_t _index_price = 100;
+        uint64_t _index_price = 10000;
         if (_mark_price)
         {
+            // ct.start("funding calc");
+            bool is_inverse = Symbol::IsInverse(order_book.symbol().Type);
 
-            std::unordered_map<std::string, std::string> val = {{"Time", to_string(_time)}, 
-                                                                {"mark_price", to_string(_mark_price)},
-                                                                {"best_bid", to_string(order_book.best_bid()->Price)},
-                                                                {"best_ask", to_string(order_book.best_ask()->Price)}
-                                                                }; 
-            _redis._hmset_db(key, val);
+            auto _funding_coeficient = funding_coeficient(_mark_price, _index_price, is_inverse);
 
-            key = "mark_prices:";
-            key += to_string(order_book.symbol().Id);
-            
-            vector<uint64_t> vec = {_time};
+            // ct.end();
+            // ct.start("price insert");
+            K row = knk(8,
+                        kj(_time),
+                        kh(order_book.symbol().Id),
+                        kj(_mark_price),
+                        kj(_index_price),
+                        kj(order_book.best_bid()->Price),
+                        kj(order_book.best_ask()->Price),
+                        kf(_funding_coeficient[0]),
+                        kf(_funding_coeficient[1]));
 
-            _redis._append_db(key, vec);
-
-            funding_coeficient_db(order_book, _mark_price, _index_price);
-
+            _kdb.insertRow(_query, _table, row);
+            // ct.end();
         }
     }
 
-    void funding_coeficient_db(const OrderBook& order_book, double mark_price, double index_price)
+    void onUpdateOrderBook(const OrderBook &order_book, bool top) override
     {
-        string key = "funding_coeficient:";
-        key += to_string(order_book.symbol().Id);
-
-        bool is_inverse = Symbol::IsInverse(order_book.symbol().Type);
-
-        auto _now = std::chrono::steady_clock::now().time_since_epoch();
-        uint64_t _time = std::chrono::duration_cast<std::chrono::nanoseconds>(_now).count();
-        key += ":" + to_string(_time);
-        
-        if (mark_price)
-        {
-            auto _funding_coeficient = funding_coeficient(mark_price, index_price, is_inverse);
-
-            std::unordered_map<std::string, std::string> val = {{"Time", to_string(_time)}, 
-                                                                {"Z", to_string(_funding_coeficient[0])},
-                                                                {"c", to_string(_funding_coeficient[1])}
-                                                                };
-            _redis._hmset_db(key, val);
-
-            key = "funding_coeficients:";
-            key += to_string(order_book.symbol().Id);
-            
-            vector<uint64_t> vec = {_time};
-
-            _redis._append_db(key, vec);
-        }
-    }
-
-    void onUpdateOrderBook(const OrderBook& order_book, bool top) override
-    { 
         // std::cout << "Update order book: " << order_book << (top ? " - Top of the book!" : "") << std::endl;
-        mark_price_db(order_book); 
+        mark_price_db(order_book);
     }
     // void onDeleteOrderBook(const OrderBook& order_book) override
     // { std::cout << "Delete order book: " << order_book << std::endl; }
 
-    void onAddLevel(const OrderBook& order_book, const Level& level, bool top) override
-    { 
+    void onAddLevel(const OrderBook &order_book, const Level &level, bool top) override
+    {
         // std::cout << "Add level: " << level << (top ? " - Top of the book!" : "") << std::endl;
         if (top)
-            mark_price_db(order_book);  
+            mark_price_db(order_book);
     }
-    void onUpdateLevel(const OrderBook& order_book, const Level& level, bool top) override
-    { 
+    void onUpdateLevel(const OrderBook &order_book, const Level &level, bool top) override
+    {
         // std::cout << "Update level: " << level << (top ? " - Top of the book!" : "") << std::endl;
         if (top)
-            mark_price_db(order_book);  
+            mark_price_db(order_book);
     }
-    void onDeleteLevel(const OrderBook& order_book, const Level& level, bool top) override
-    { 
-        // std::cout << "Delete level: " << level << (top ? " - Top of the book!" : "") << std::endl; 
+    void onDeleteLevel(const OrderBook &order_book, const Level &level, bool top) override
+    {
+        // std::cout << "Delete level: " << level << (top ? " - Top of the book!" : "") << std::endl;
         if (top)
-            mark_price_db(order_book); 
+            mark_price_db(order_book);
     }
 
-    std::unordered_map<std::string, std::string> order_prep(const Order& order)
-    {        
-        stringstream side_str;
-        side_str << order.Side;
+    K order_prep(const Order &order, uint64_t currentExecutedPrice=0, uint64_t currentExecutedQuantity=0)
+    {
 
-        stringstream TimeInForce_str;
-        TimeInForce_str << order.TimeInForce;
-
-        stringstream Type_str;
-        Type_str << order.Type;
-        
         auto _time = (uint64_t)(std::chrono::steady_clock::now().time_since_epoch() / std::chrono::nanoseconds(1));
 
-        std::unordered_map<std::string, std::string> val = {{"Id", to_string(order.Id)},
-                                                            {"SymbolId", to_string(order.SymbolId)}, 
-                                                            {"ExecutedQuantity", to_string(order.ExecutedQuantity)},
-                                                            {"LeavesQuantity", to_string(order.LeavesQuantity)},
-                                                            {"MaxVisibleQuantity", to_string(order.MaxVisibleQuantity)},
-                                                            {"Price", to_string(order.Price)},
-                                                            {"Quantity", to_string(order.Quantity)},
-                                                            {"Side", side_str.str()},
-                                                            {"Slippage", to_string(order.Slippage)},
-                                                            {"StopPrice", to_string(order.StopPrice)},
-                                                            {"TimeInForce", TimeInForce_str.str()},
-                                                            {"TrailingDistance", to_string(order.TrailingDistance)},
-                                                            {"TrailingStep", to_string(order.TrailingStep)},
-                                                            {"Type", Type_str.str()},
-                                                            {"Time", to_string(_time)},
-                                                            {"AccountId", to_string(order.AccountId)}
-                                                            };
-        return val; 
+        K val = knk(18,
+                    kj(order.Id),
+                    kh(order.SymbolId),
+                    kj(order.ExecutedQuantity),
+                    kj(order.LeavesQuantity),
+                    kj(order.MaxVisibleQuantity),
+                    kj(order.Price),
+                    kj(order.Quantity),
+                    kh((uint8_t)order.Side),
+                    kj(order.Slippage),
+                    kj(order.StopPrice),
+                    kh((uint8_t)order.TimeInForce),
+                    kj(order.TrailingDistance),
+                    kj(order.TrailingStep),
+                    kh((uint8_t)order.Type),
+                    kj(_time),
+                    kj(order.AccountId),
+                    kj(currentExecutedPrice),
+                    kj(currentExecutedQuantity));
+        return val;
     }
 
-    std::unordered_map<std::string, std::string> position_prep(const Position& position)
-    {        
-        stringstream side_str;
-        side_str << position.Side;
-        
+    K position_prep(const Position &position)
+    {
+
         auto _time = (uint64_t)(std::chrono::steady_clock::now().time_since_epoch() / std::chrono::nanoseconds(1));
 
-        std::unordered_map<std::string, std::string> val = {{"Id", to_string(position.Id)},
-                                                            {"SymbolId", to_string(position.SymbolId)},
-                                                            {"Price", to_string(position.AvgEntryPrice)},
-                                                            {"Quantity", to_string(position.Quantity)},
-                                                            {"Side", side_str.str()},
-                                                            {"Time", to_string(_time)},
-                                                            {"AccountId", to_string(position.AccountId)},
-                                                            {"Z", to_string(position.Z)},
-                                                            {"C", to_string(position.C)},
-                                                            {"Funding", to_string(position.Funding)},
-                                                            {"MarkPrice", to_string(position.MarkPrice)},
-                                                            {"IndexPrice", to_string(position.IndexPrice)},
-                                                            {"RealizedPnL", to_string(position.RealizedPnL)},
-                                                            {"UnrealizedPnL", to_string(position.UnrealizedPnL)}
-                                                            };
-        return val; 
+        K val = knk(14,
+                    kj(position.Id),
+                    kh(position.SymbolId),
+                    kj(position.AvgEntryPrice),
+                    kj(position.Quantity),
+                    kh((uint8_t)position.Side),
+                    kj(_time),
+                    kj(position.AccountId),
+                    kf(position.RiskZ),
+                    kf(position.RiskC),
+                    kf(position.Funding),
+                    kj(position.MarkPrice),
+                    kj(position.IndexPrice),
+                    kf(position.RealizedPnL),
+                    kf(position.UnrealizedPnL));
+        return val;
     }
 
-    void onAddOrder(const Order& order) override
-    { 
-        // std::cout << "Add order: " << order << std::endl; 
+    void onAddOrder(const Order &order) override
+    {
+        // std::cout << "Add order: " << order << std::endl;
 
-        // vec = _lrange_db(key);
-        // for (std::vector<string>::iterator it = vec.begin() ; it != vec.end(); ++it)
-        // {
-        //     printf("orders: %s\n", (*it).c_str());
-        // }
-
-        string key = "order:";
-        key += to_string(order.Id);
+        string _table = "orders";
+        string _query = "insert";
 
         auto val = order_prep(order);
 
-        // ct.start("redis insert");
-        _redis._hmset_db(key, val);
-        // ct.end();
-        key = "orders";
-        vector<uint64_t> vec = {order.Id};
-
-        // ct.start("redist list insert");
-        _redis._append_db(key, vec);
+        // ct.start("order insert");
+        _kdb.insertRow(_query, _table, val);
         // ct.end();
     }
 
-    void onUpdateOrder(const Order& order) override
-    { 
+    void onUpdateOrder(const Order &order) override
+    {
         // std::cout << "Update order: " << order << std::endl;
-        string key = "order:";
-        key += to_string(order.Id);
-        
-        std::unordered_map<std::string, std::string> val;
+        string _table = "orders";
+        char *_query = new char[600];
+        auto _time = (uint64_t)(std::chrono::steady_clock::now().time_since_epoch() / std::chrono::nanoseconds(1));
 
-        val = order_prep(order);
- 
-        _redis._hmset_db(key, val);
+        sprintf(_query, 
+        "TimeInForce=%d, TrailingDistance=%lu, TrailingStep=%lu, Type=%d, Time=%lu, ExecutedQuantity=%lu, LeavesQuantity=%lu, MaxVisibleQuantity=%lu, Price=%lu, Quantity=%lu, Side=%d, Slippage=%lu, StopPrice=%lu",
+        (uint8_t)order.TimeInForce, 
+        order.TrailingDistance, 
+        order.TrailingStep,
+        (uint8_t)order.Type,
+        _time,
+        order.ExecutedQuantity,
+        order.LeavesQuantity,
+        order.MaxVisibleQuantity,
+        order.Price,
+        order.Quantity,
+        (uint8_t)order.Side,
+        order.Slippage,
+        order.StopPrice);
 
-        // key = "orders";
-        // vector<uint64_t> vec = {order.Id};
+        char *_query2 = new char[600];
 
-        // _redis._append_db(key, vec); 
+        sprintf(_query2, "update %s from %s where Id=%lu", _query, _table.c_str(), order.Id);
+        _kdb.executeQuery(_query2);
     }
-    void onDeleteOrder(const Order& order) override
-    { 
+
+    void onDeleteOrder(const Order &order) override
+    {
         // std::cout << "Delete order: " << order << std::endl;
-        string key = "order:";
-        key += to_string(order.Id);
-        _redis._del_db(key); 
+        // string _table = "orders";
+        // string _query = "delete";
 
-        key = "del_order:";
-        key += to_string(order.Id);
-        
-        std::unordered_map<std::string, std::string> val;
+        // K val = order_prep(order);
 
-        val = order_prep(order);
-        _redis._hmset_db(key, val);
-
-        key = "del_orders";
-        vector<uint64_t> vec = {order.Id};
-
-        _redis._append_db(key, vec);
-
+        // ct.start("order delete");
+        // _kdb.insertRow(_query, _table, val);
+        // ct.end();
     }
 
-    void onExecuteOrder(const Order& order, uint64_t price, uint64_t quantity) override
-    { 
+    void onExecuteOrder(const Order &order, uint64_t price, uint64_t quantity) override
+    {
         // std::cout << "Execute order: " << order << std::endl;
-        string key = "execute:";
-        key += to_string(order.Id);
+        string _table = "transactions";
+        string _query = "insert";
 
-        auto val = order_prep(order);
+        auto val = order_prep(order, price, quantity);
 
-        val["CurrentExecutedPrice"] = price;
-        val["CurrentExecutedQuantity"] = quantity;
+        _kdb.insertRow(_query, _table, val);
 
-        _redis._hmset_db(key, val);
-        key = "executes";
-        vector<uint64_t> vec = {order.Id};
+        _table = "positions";
+        char *_query2 = new char[600];
+        sprintf(_query2, "select [-1] from %s where AccountId=%lu and SymbolId=%u", _table.c_str(), order.AccountId, order.SymbolId);
+        //Id, SymbolId, Side, AvgEntryPrice, Quantity, AccountId, MarkPrice, IndexPrice, RiskZ, RiskC, Funding, RealizedPnL, UnrealizedPnL by Time
+        K data = _kdb.readQuery(_query2);
+        // _kdb.printq(data);
 
-        _redis._append_db(key, vec);
-
-        key = "position:";
-        key += to_string(order.AccountId);
-        key += ":" + to_string(order.SymbolId);
-
-        std::unordered_map<std::string, std::string> data = _redis._hgetall_db(key);
         Position last_pos, curr_pos;
-        last_pos = last_pos.ReadDbStructure(data);
+        last_pos = last_pos.ReadDbStructure(data, _kdb);
         curr_pos = last_pos.OrderExecuted(last_pos, order, price, quantity, symbols[order.SymbolId]);
         val = position_prep(curr_pos);
+        _table = "positions";
+        _query = "insert";
+        _kdb.insertRow(_query, _table, val);
 
-        _redis._hmset_db(key, val);
-
-        key = "positions";
-        vector<string> vec_str = {val["Time"]};
-
-        _redis._append_db(key, vec_str);
     }
-
 };
 
 // void AddSymbol(MarketManager& market, const std::string& command)
@@ -448,17 +448,20 @@ protected:
 //     std::cerr << "Invalid 'add book' command: " << command << std::endl;
 // }
 
-int main(int argc, char** argv)
+int main(int argc, char **argv)
 {
-    MarketHandler market_handler = MarketHandler();
+    I kdb = khpu(S("127.0.0.1"), I(5000), S(":"));
+    if(!handleOk(kdb))
+        return 1;
+    MyMarketHandler market_handler = MyMarketHandler(kdb);
     MarketManager market(market_handler);
-    int id = 1; //market_handler.last_index("orders");
+    int id = market_handler.last_index("orders");
     uint64_t account_id;
     cout << "id: " << id << endl;
     int price;
     int quantity;
     // long start_time;
-    long txn_no = 10000000;
+    long txn_no = 10000;
     Order order;
     ErrorCode result;
 
@@ -466,10 +469,10 @@ int main(int argc, char** argv)
     char name[8]{"BTCUSDT"};
 
     SymbolType type = SymbolType::VANILLAPERP;
-    uint64_t multiplier = 2;
+    uint64_t multiplier = 1;
 
     Symbol symbol(idSymbol, name, type, multiplier);
-
+    market_handler.createTables(symbol);
     result = market.AddSymbol(symbol);
     if (result != ErrorCode::OK)
         std::cerr << "Failed 'add symbol' command: " << result << std::endl;
@@ -477,45 +480,44 @@ int main(int argc, char** argv)
     result = market.AddOrderBook(symbol);
     if (result != ErrorCode::OK)
         std::cerr << "Failed 'add book' command: " << result << std::endl;
-    
-    
+
     market.EnableMatching();
 
     std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
 
-    for (int i=0;i<txn_no;i++)
+    for (int i = 0; i < txn_no; i++)
     {
-        
+
         price = (int)(rand() * 10000.0 / RAND_MAX);
         quantity = (int)(rand() * 1000.0 / RAND_MAX) + 1;
         order = Order::BuyLimit(id, 1, price, quantity);
-        account_id = (int)(rand() * 10.0 / RAND_MAX);
+        account_id = (int)(rand() * 1.0 / RAND_MAX);
         order.AccountId = account_id;
         result = market.AddOrder(order);
         if (result != ErrorCode::OK)
             std::cerr << "Failed 'add limit' command: " << result << std::endl;
         id++;
-        price = 200 - (int)(rand() * 10000.0 / RAND_MAX);
+        price = 10000 - (int)(rand() * 10000.0 / RAND_MAX);
         quantity = (int)(rand() * 1000.0 / RAND_MAX) + 1;
         order = Order::SellLimit(id, 1, price, quantity);
-        account_id = (int)(rand() * 10.0 / RAND_MAX);
+        account_id = (int)(rand() * 1.0 / RAND_MAX);
         order.AccountId = account_id;
         result = market.AddOrder(order);
         if (result != ErrorCode::OK)
             std::cerr << "Failed 'add limit' command: " << result << std::endl;
         id++;
         // price = 200 - (int)(rand() * 100.0 / RAND_MAX);
-        quantity = (int)(rand() * 100.0 / RAND_MAX) + 1;
+        quantity = (int)(rand() * 10.0 / RAND_MAX) + 1;
         order = Order::BuyMarket(id, 1, quantity);
-        account_id = (int)(rand() * 10.0 / RAND_MAX);
+        account_id = (int)(rand() * 1.0 / RAND_MAX);
         order.AccountId = account_id;
         result = market.AddOrder(order);
         if (result != ErrorCode::OK)
             std::cerr << "Failed 'add limit' command: " << result << std::endl;
         id++;
-        quantity = (int)(rand() * 100.0 / RAND_MAX) + 1;
+        quantity = (int)(rand() * 10.0 / RAND_MAX) + 1;
         order = Order::SellMarket(id, 1, quantity);
-        account_id = (int)(rand() * 10.0 / RAND_MAX);
+        account_id = (int)(rand() * 1.0 / RAND_MAX);
         order.AccountId = account_id;
         result = market.AddOrder(order);
         if (result != ErrorCode::OK)
@@ -524,20 +526,20 @@ int main(int argc, char** argv)
     }
     std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
 
-    int64_t time_diff = std::chrono::duration_cast<std::chrono::nanoseconds> (end - begin).count();
+    int64_t time_diff = std::chrono::duration_cast<std::chrono::nanoseconds>(end - begin).count();
     cout << "No of orders send: " << txn_no * 4 << endl;
-    std::cout << "Time difference = " << time_diff / 4.0 / txn_no  << "[ns]" << std::endl;
+    std::cout << "Time difference = " << time_diff / 4.0 / txn_no << "[ns]" << std::endl;
     cout << "TPS: " << txn_no * 4.0 / time_diff * 1e9 << endl;
     CppTrader::Matching::MarketManager::OrderBooks ob = market.order_books();
     if (ob.size())
     {
         cout << ob.size() << endl;
         auto ob_btcusdt = ob[1];
-        cout << "Bids level size: " << ob_btcusdt->bids().size() <<  "; Asks level size: " << ob_btcusdt->asks().size() << endl;
+        cout << "Bids level size: " << ob_btcusdt->bids().size() << "; Asks level size: " << ob_btcusdt->asks().size() << endl;
     }
+    kclose(kdb);
     return 0;
 }
-
 
 /*
 

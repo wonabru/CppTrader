@@ -34,14 +34,14 @@ inline Position::Position(uint64_t id,
                           PositionSide side, 
                           uint64_t price, 
                           uint64_t quantity,
-                         uint64_t accountId, 
-                         uint64_t markPrice, 
-                         uint64_t indexPrice,
-                         double z, 
-                         double c, 
-                         double funding, 
-                         double realizedPnL,
-                         double unrealizedPnL) noexcept
+                          uint64_t accountId, 
+                          uint64_t markPrice, 
+                          uint64_t indexPrice,
+                          float z, 
+                          float c, 
+                          float funding, 
+                          float realizedPnL,
+                          float unrealizedPnL) noexcept
     : Id(id),
       SymbolId(symbol),
       Side(side),
@@ -50,8 +50,8 @@ inline Position::Position(uint64_t id,
       AccountId(accountId),
       MarkPrice(markPrice),
       IndexPrice(indexPrice),
-      Z(z),
-      C(c),
+      RiskZ(z),
+      RiskC(c),
       Funding(funding),
       RealizedPnL(realizedPnL),
       UnrealizedPnL(unrealizedPnL)
@@ -69,8 +69,8 @@ inline TOutputStream& operator<<(TOutputStream& stream, const Position& position
         << "; AccountId=" << position.AccountId
         << "; MarkPrice=" << position.MarkPrice
         << "; IndexPrice=" << position.IndexPrice
-        << "; Z=" << position.Z
-        << "; C=" << position.C
+        << "; RiskZ=" << position.RiskZ
+        << "; RiskC=" << position.RiskC
         << "; Funding=" << position.Funding
         << "; RealizedPnL=" << position.RealizedPnL
         << "; UnrealizedPnL=" << position.UnrealizedPnL;
@@ -141,6 +141,8 @@ inline Position Position::OrderExecuted(const Position &position, const CppTrade
     pos.UnrealizedPnL = pnls[1];
     pos.AvgEntryPrice = pnls[2];
     pos.Quantity = abs(q_all);
+    pos.SymbolId = order.SymbolId;
+    pos.AccountId = order.AccountId;
     pos.Side = q_all>=0?PositionSide::LONG:PositionSide::SHORT;
 
     if (q == -q_pos)
@@ -151,27 +153,39 @@ inline Position Position::OrderExecuted(const Position &position, const CppTrade
     return pos;
 }
 
-inline Position Position::ReadDbStructure(std::unordered_map<std::string, std::string> data) noexcept
+inline Position Position::ReadDbStructure(K data, Kdbp kdb) noexcept
 {
-    if (data.empty())
+    if (!data)
     {
         return Position();
     }
-    PositionSide side = data["Side"]=="LONG"?PositionSide::LONG:PositionSide::SHORT;
-    Position pos = Position(stoul(data["Id"]), 
-                            stoi(data["SymbolId"]), 
-                            side, 
-                            stoul(data["Price"]), 
-                            stoul(data["Quantity"]),
-                            stoul(data["AccountId"]), 
-                            stoul(data["MarkPrice"]), 
-                            stoul(data["IndexPrice"]),
-                            stod(data["Z"]), 
-                            stod(data["C"]), 
-                            stod(data["Funding"]), 
-                            stod(data["RealizedPnL"]),
-                            stod(data["UnrealizedPnL"]));
+    K flip = ktd(data);
+    // K columns = kK(flip->k)[0];
+    K rows = kK(flip->k)[1];
+    int rowcount = kK(rows)[0]->n;
+    if (!rowcount)
+    {
+        return Position();
+    }
+    auto side = (uint8_t)kdb.getitem(kK(rows)[4], 0)->h;
+    PositionSide _side = side?PositionSide::SHORT:PositionSide::LONG;
+
+    auto pos = Position((uint64_t)kdb.getitem(kK(rows)[0], 0)->j, 
+                        (uint32_t)kdb.getitem(kK(rows)[1], 0)->i, 
+                        _side, 
+                        (uint64_t)kdb.getitem(kK(rows)[2], 0)->j, 
+                        (uint64_t)kdb.getitem(kK(rows)[3], 0)->j,
+                        (uint64_t)kdb.getitem(kK(rows)[6], 0)->j, 
+                        (uint64_t)kdb.getitem(kK(rows)[10], 0)->j, 
+                        (uint64_t)kdb.getitem(kK(rows)[11], 0)->j,
+                        (float)kdb.getitem(kK(rows)[7], 0)->f, 
+                        (float)kdb.getitem(kK(rows)[8], 0)->f, 
+                        (float)kdb.getitem(kK(rows)[9], 0)->f, 
+                        (float)kdb.getitem(kK(rows)[12], 0)->f,
+                        (float)kdb.getitem(kK(rows)[13], 0)->f);
+
     return pos;
+
 }
 
 } // namespace Risk
