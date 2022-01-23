@@ -6,6 +6,8 @@
     \copyright MIT License
 */
 #define ORDER_INT_MAX 100000000UL
+#define CHUNK_SIZE 10000UL
+#define CLOCK_INTERVAL 10000UL
 
 #include "trader/matching/market_manager.h"
 #include "trader/kdbp_db.h"
@@ -46,6 +48,16 @@ public:
     }
 };
 
+template <
+    class result_t   = std::chrono::milliseconds,
+    class clock_t    = std::chrono::steady_clock,
+    class duration_t = std::chrono::milliseconds
+>
+auto since(std::chrono::time_point<clock_t, duration_t> const& start)
+{
+    return std::chrono::duration_cast<result_t>(clock_t::now() - start);
+}
+
 static I handleOk(I handle)
 {
     if(handle > 0)
@@ -62,17 +74,55 @@ static I handleOk(I handle)
 class MyMarketHandler : public MarketHandler
 {
 public:
-    uint64_t last_index(const string &type)
-    {
-        //should be last index of rows
-        return 1;
-    }
 
+    uint64_t count_time;
+    uint64_t count_orders_chunk;
+    uint64_t count_transactions_chunk;
+    uint64_t count_positions_chunk;
+    
     Kdbp _kdb;
     CheckTime ct = CheckTime();
     unordered_map<uint32_t, Symbol> symbols = {};
+    unordered_map<uint64_t, string> users = {};
+    unordered_map<string, Position> usersStats = {};
+
+    vector<Order> orders_chunk;
+    vector<Order> transactions_chunk;
+    vector<Position> positions_chunk;
+    vector<uint64_t> executedPrice;
+    vector<uint64_t> executedQuantity;
+
+    uint64_t last_index(const string &table)
+    {
+        //should be last index of rows
+        count_time = 0UL;
+        count_orders_chunk = 0UL;
+        count_transactions_chunk = 0UL;
+        count_positions_chunk = 0UL;
+        K count = _kdb.readQuery("count " + table);
+        return count->j;
+        
+    }
+
     MyMarketHandler(I kdb): _kdb(Kdbp(kdb)){}
     MyMarketHandler() noexcept = delete;
+
+    //First needs to be defined symbols
+    void addUser(uint64_t accountId, string name)
+    {
+        users[accountId] = name;
+        for (auto& it: symbols) {
+            Position pos = Position();
+            pos.Id = last_index("positions");
+            pos.AccountId = accountId;
+            pos.SymbolId = it.second.Id;
+
+            usersStats[to_string(it.second.Id) + "+" + to_string(accountId)] = pos;
+            count_positions_chunk = CHUNK_SIZE + 1;
+            appendPositionsChunk("upsert", pos);
+        }
+    }
+
     void createTables(const Symbol &symbol)
     {
 
@@ -84,17 +134,17 @@ public:
 
         _kdb.executeQuery(_query);
 
-        _query = "meta orders:([] Id:`long$(); SymbolId:`short$(); ExecutedQuantity:`long$(); LeavesQuantity:`long$(); MaxVisibleQuantity:`long$(); ";
+        _query = "meta orders:([Id#:`long$()] SymbolId:`short$(); ExecutedQuantity:`long$(); LeavesQuantity:`long$(); MaxVisibleQuantity:`long$(); ";
         _query += "Price:`long$(); Quantity:`long$(); Side:`short$(); Slippage:`long$(); StopPrice:`long$(); TimeInForce:`short$(); TrailingDistance:`long$(); ";
         _query += "TrailingStep:`long$(); Type:(); Time:`long$(); AccountId:`long$(); CurrentExecutedPrice:`long$(); CurrentExecutedQuantity:`long$())";
         _kdb.executeQuery(_query);
 
-        _query = "meta transactions:([] Id:`long$(); SymbolId:`short$(); ExecutedQuantity:`long$(); LeavesQuantity:`long$(); MaxVisibleQuantity:`long$(); ";
+        _query = "meta transactions:([Id:`long$()] SymbolId:`short$(); ExecutedQuantity:`long$(); LeavesQuantity:`long$(); MaxVisibleQuantity:`long$(); ";
         _query += "Price:`long$(); Quantity:`long$(); Side:`short$(); Slippage:`long$(); StopPrice:`long$(); TimeInForce:`short$(); TrailingDistance:`long$(); ";
         _query += "TrailingStep:`long$(); Type:(); Time:`long$(); AccountId:`long$(); CurrentExecutedPrice:`long$(); CurrentExecutedQuantity:`long$())";
         _kdb.executeQuery(_query);
 
-        _query = "meta positions:([] Id:`long$(); SymbolId:`short$(); AvgEntryPrice:`long$(); Quantity:`long$(); Side:`short$(); ";
+        _query = "meta positions:([Id#:`long$()] SymbolId:`short$(); AvgEntryPrice:`long$(); Quantity:`long$(); Side:`short$(); ";
         _query += "Time:`long$(); AccountId:`long$(); RiskZ:`float$(); RiskC:`float$(); Funding:`float$(); MarkPrice:`long$(); IndexPrice:`long$(); ";
         _query += "RealizedPnL:`float$(); UnrealizedPnL:`float$())";
         _kdb.executeQuery(_query);
@@ -106,13 +156,13 @@ protected:
     {
         std::cout << "Add symbol: " << symbol << std::endl;
         time_t currentTime;
-        struct tm *ct;
+        struct tm *ctime;
         string _query = "insert";
         string _table = "symbols";
         time(&currentTime);
-        ct = localtime(&currentTime);
+        ctime = localtime(&currentTime);
         K row = knk(5,
-                    kj(_kdb.castTime(ct)),
+                    kj(_kdb.castTime(ctime)),
                     kh(symbol.Id),
                     ks(S(symbol.Name)),
                     kh((uint8_t)symbol.Type),
@@ -182,6 +232,11 @@ protected:
 
     void mark_price_db(const OrderBook &order_book)
     {
+        if (++count_time < CLOCK_INTERVAL)
+        {
+            return;
+        }
+        count_time = 0UL;
         string _table = "prices";
         string _query = "insert";
         // ct.start("mark price calc");
@@ -243,79 +298,159 @@ protected:
             mark_price_db(order_book);
     }
 
-    K order_prep(const Order &order, uint64_t currentExecutedPrice=0, uint64_t currentExecutedQuantity=0)
+    K order_prep(const vector<Order> &orders, vector<uint64_t> currentExecutedPrice, vector<uint64_t> currentExecutedQuantity)
     {
+        auto _time = (uint64_t)(std::chrono::steady_clock::now().time_since_epoch() / std::chrono::milliseconds(1));
 
-        auto _time = (uint64_t)(std::chrono::steady_clock::now().time_since_epoch() / std::chrono::nanoseconds(1));
-
-        K val = knk(18,
-                    kj(order.Id),
-                    kh(order.SymbolId),
-                    kj(order.ExecutedQuantity),
-                    kj(order.LeavesQuantity),
-                    kj(order.MaxVisibleQuantity),
-                    kj(order.Price),
-                    kj(order.Quantity),
-                    kh((uint8_t)order.Side),
-                    kj(order.Slippage),
-                    kj(order.StopPrice),
-                    kh((uint8_t)order.TimeInForce),
-                    kj(order.TrailingDistance),
-                    kj(order.TrailingStep),
-                    kh((uint8_t)order.Type),
-                    kj(_time),
-                    kj(order.AccountId),
-                    kj(currentExecutedPrice),
-                    kj(currentExecutedQuantity));
-        return val;
+        vector<K> lists({ktn(KJ, orders.size()),
+                      ktn(KH, orders.size()),
+                      ktn(KJ, orders.size()),
+                      ktn(KJ, orders.size()),
+                      ktn(KJ, orders.size()),
+                      ktn(KJ, orders.size()),
+                      ktn(KJ, orders.size()),
+                      ktn(KH, orders.size()),
+                      ktn(KJ, orders.size()),
+                      ktn(KJ, orders.size()),
+                      ktn(KH, orders.size()),
+                      ktn(KJ, orders.size()),
+                      ktn(KJ, orders.size()),
+                      ktn(KH, orders.size()),
+                      ktn(KJ, orders.size()),
+                      ktn(KJ, orders.size()),
+                      ktn(KJ, orders.size()),
+                      ktn(KJ, orders.size())});
+        for (uint64_t i=0;i<orders.size();i++)
+        {
+            kJ(lists[0])[i] = orders[i].Id;
+            kH(lists[1])[i] = orders[i].SymbolId;
+            kJ(lists[2])[i] = orders[i].ExecutedQuantity;
+            kJ(lists[3])[i] = orders[i].LeavesQuantity;
+            kJ(lists[4])[i] = orders[i].MaxVisibleQuantity;
+            kJ(lists[5])[i] = orders[i].Price;
+            kJ(lists[6])[i] = orders[i].Quantity;
+            kH(lists[7])[i] = (uint8_t)orders[i].Side;
+            kJ(lists[8])[i] = orders[i].Slippage;
+            kJ(lists[9])[i] = orders[i].StopPrice;
+            kH(lists[10])[i] = (uint8_t)orders[i].TimeInForce;
+            kJ(lists[11])[i] = orders[i].TrailingDistance;
+            kJ(lists[12])[i] = orders[i].TrailingStep;
+            kH(lists[13])[i] = (uint8_t)orders[i].Type;
+            kJ(lists[14])[i] = _time;
+            kJ(lists[15])[i] = orders[i].AccountId;
+            kJ(lists[16])[i] = currentExecutedPrice[i];
+            kJ(lists[17])[i] = currentExecutedQuantity[i];
+        }
+        K vals = knk(18,
+                    lists[0],
+                    lists[1],
+                    lists[2],
+                    lists[3],
+                    lists[4],
+                    lists[5],
+                    lists[6],
+                    lists[7],
+                    lists[8],
+                    lists[9],
+                    lists[10],
+                    lists[11],
+                    lists[12],
+                    lists[13],
+                    lists[14],
+                    lists[15],
+                    lists[16],
+                    lists[17]);
+        return vals;
     }
 
-    K position_prep(const Position &position)
+    K position_prep(const vector<Position> &positions)
     {
+        auto _time = (uint64_t)(std::chrono::steady_clock::now().time_since_epoch() / std::chrono::milliseconds(1));
 
-        auto _time = (uint64_t)(std::chrono::steady_clock::now().time_since_epoch() / std::chrono::nanoseconds(1));
+        vector<K> lists({ktn(KJ, positions.size()),
+                      ktn(KH, positions.size()),
+                      ktn(KJ, positions.size()),
+                      ktn(KJ, positions.size()),
+                      ktn(KH, positions.size()),
+                      ktn(KJ, positions.size()),
+                      ktn(KJ, positions.size()),
+                      ktn(KF, positions.size()),
+                      ktn(KF, positions.size()),
+                      ktn(KF, positions.size()),
+                      ktn(KJ, positions.size()),
+                      ktn(KJ, positions.size()),
+                      ktn(KF, positions.size()),
+                      ktn(KF, positions.size())});
 
-        K val = knk(14,
-                    kj(position.Id),
-                    kh(position.SymbolId),
-                    kj(position.AvgEntryPrice),
-                    kj(position.Quantity),
-                    kh((uint8_t)position.Side),
-                    kj(_time),
-                    kj(position.AccountId),
-                    kf(position.RiskZ),
-                    kf(position.RiskC),
-                    kf(position.Funding),
-                    kj(position.MarkPrice),
-                    kj(position.IndexPrice),
-                    kf(position.RealizedPnL),
-                    kf(position.UnrealizedPnL));
-        return val;
+        for (uint64_t i=0;i<positions.size();i++)
+        {
+            kJ(lists[0])[i] = positions[i].Id;
+            kH(lists[1])[i] = positions[i].SymbolId;
+            kJ(lists[2])[i] = positions[i].AvgEntryPrice;
+            kJ(lists[3])[i] = positions[i].Quantity;
+            kH(lists[4])[i] = (uint8_t)positions[i].Side;
+            kJ(lists[5])[i] = _time,
+            kJ(lists[6])[i] = positions[i].AccountId;
+            kF(lists[7])[i] = positions[i].RiskZ;
+            kF(lists[8])[i] = positions[i].RiskC;
+            kF(lists[9])[i] = positions[i].Funding;
+            kJ(lists[10])[i] = positions[i].MarkPrice;
+            kJ(lists[11])[i] = positions[i].IndexPrice;
+            kF(lists[12])[i] = positions[i].RealizedPnL;
+            kF(lists[13])[i] = positions[i].UnrealizedPnL;
+        }
+        K vals = knk(14,
+                    lists[0],
+                    lists[1],
+                    lists[2],
+                    lists[3],
+                    lists[4],
+                    lists[5],
+                    lists[6],
+                    lists[7],
+                    lists[8],
+                    lists[9],
+                    lists[10],
+                    lists[11],
+                    lists[12],
+                    lists[13]);
+        return vals;
+    }
+
+    void appendOrdersChunk(const Order &order)
+    {
+        orders_chunk.push_back(order);
+        if (++count_orders_chunk < CHUNK_SIZE)
+        {
+            return;
+        }
+        count_orders_chunk = 0UL;
+        vector<uint64_t> prc; 
+        vector<uint64_t> qty;
+        prc.resize(orders_chunk.size());
+        qty.resize(orders_chunk.size());
+        K vals = order_prep(orders_chunk, prc, qty);
+        _kdb.insertMultRow("insert", "orders", vals);
+        orders_chunk.clear();
     }
 
     void onAddOrder(const Order &order) override
     {
         // std::cout << "Add order: " << order << std::endl;
-
-        string _table = "orders";
-        string _query = "insert";
-
-        auto val = order_prep(order);
-
-        // ct.start("order insert");
-        _kdb.insertRow(_query, _table, val);
-        // ct.end();
+        appendOrdersChunk(order);
     }
 
     void onUpdateOrder(const Order &order) override
     {
         // std::cout << "Update order: " << order << std::endl;
+        // ct.start("prepare udate'");
         string _table = "orders";
         char *_query = new char[600];
         auto _time = (uint64_t)(std::chrono::steady_clock::now().time_since_epoch() / std::chrono::nanoseconds(1));
 
         sprintf(_query, 
-        "TimeInForce=%d, TrailingDistance=%lu, TrailingStep=%lu, Type=%d, Time=%lu, ExecutedQuantity=%lu, LeavesQuantity=%lu, MaxVisibleQuantity=%lu, Price=%lu, Quantity=%lu, Side=%d, Slippage=%lu, StopPrice=%lu",
+        "Id=%lu, TimeInForce=%d, TrailingDistance=%lu, TrailingStep=%lu, Type=%d, Time=%lu, ExecutedQuantity=%lu, LeavesQuantity=%lu, MaxVisibleQuantity=%lu, Price=%lu, Quantity=%lu, Side=%d, Slippage=%lu, StopPrice=%lu",
+        order.Id,
         (uint8_t)order.TimeInForce, 
         order.TrailingDistance, 
         order.TrailingStep,
@@ -331,10 +466,13 @@ protected:
         order.StopPrice);
 
         char *_query2 = new char[600];
-
-        sprintf(_query2, "update %s from %s where Id=%lu", _query, _table.c_str(), order.Id);
+        sprintf(_query2, "%s upsert %s", _table.c_str());//, order.Id);
+        // ct.end();
+        // ct.start("update order");
         _kdb.executeQuery(_query2);
+        // ct.end();
     }
+    
 
     void onDeleteOrder(const Order &order) override
     {
@@ -349,104 +487,68 @@ protected:
         // ct.end();
     }
 
+    void appendTransactionsChunk(const Order &order, uint64_t price, uint64_t quantity)
+    {
+        transactions_chunk.push_back(order);
+        executedPrice.push_back(price);
+        executedQuantity.push_back(quantity);
+
+        if (++count_transactions_chunk < CHUNK_SIZE)
+        {
+            return;
+        }
+        count_transactions_chunk = 0UL;
+
+        K vals = order_prep(orders_chunk, executedPrice, executedQuantity);
+        _kdb.insertMultRow("insert", "transactions", vals);
+        orders_chunk.clear();
+        executedQuantity.clear();
+        executedQuantity.clear();
+    }
+
+    void appendPositionsChunk(const string& query, const Position &position)
+    {
+        positions_chunk.push_back(position);
+
+        if (++count_positions_chunk < 10UL)
+        {
+            return;
+        }
+        count_positions_chunk = 0UL;
+
+        K vals = position_prep(positions_chunk);
+        _kdb.insertMultRow(query, "positions", vals);
+        positions_chunk.clear();
+    }
+
     void onExecuteOrder(const Order &order, uint64_t price, uint64_t quantity) override
     {
         // std::cout << "Execute order: " << order << std::endl;
-        string _table = "transactions";
-        string _query = "insert";
+        appendTransactionsChunk(order, price, quantity);
 
-        auto val = order_prep(order, price, quantity);
-
-        _kdb.insertRow(_query, _table, val);
-
-        _table = "positions";
-        char *_query2 = new char[600];
-        sprintf(_query2, "select [-1] from %s where AccountId=%lu and SymbolId=%u", _table.c_str(), order.AccountId, order.SymbolId);
-        //Id, SymbolId, Side, AvgEntryPrice, Quantity, AccountId, MarkPrice, IndexPrice, RiskZ, RiskC, Funding, RealizedPnL, UnrealizedPnL by Time
-        K data = _kdb.readQuery(_query2);
+        // char *_query2 = new char[600];
+        // sprintf(_query2, "select [-1] from positions where AccountId=%lu and SymbolId=%u", order.AccountId, order.SymbolId);
+        // K data = _kdb.readQuery(_query2);
         // _kdb.printq(data);
+        // last_pos = last_pos.ReadDbStructure(data, _kdb);
 
         Position last_pos, curr_pos;
-        last_pos = last_pos.ReadDbStructure(data, _kdb);
-        curr_pos = last_pos.OrderExecuted(last_pos, order, price, quantity, symbols[order.SymbolId]);
-        val = position_prep(curr_pos);
-        _table = "positions";
-        _query = "insert";
-        _kdb.insertRow(_query, _table, val);
 
+        string _user_symbol = to_string(order.SymbolId) + "+" + to_string(order.AccountId);
+        last_pos = usersStats[_user_symbol];
+        curr_pos = last_pos.OrderExecuted(last_pos, order, price, quantity, symbols[order.SymbolId]);
+        usersStats[_user_symbol] = curr_pos;
+
+        appendPositionsChunk("update", curr_pos);
     }
+    
 };
 
-// void AddSymbol(MarketManager& market, const std::string& command)
-// {
-//     static std::regex pattern("^add symbol (\\d+) (.+)$ (\\d+) (\\d+)");
-//     std::smatch match;
-
-//     if (std::regex_search(command, match, pattern))
-//     {
-//         uint32_t id = std::stoi(match[1]);
-
-//         char name[8];
-//         std::string sname = match[2];
-//         std::memcpy(name, sname.data(), std::min(sname.size(), sizeof(name)));
-//         SymbolType type = SymbolType(std::stoi(match[3]));
-//         uint64_t multiplier = std::stoul(match[4]);
-
-//         Symbol symbol(id, name, type, multiplier);
-
-//         ErrorCode result = market.AddSymbol(symbol);
-//         if (result != ErrorCode::OK)
-//             std::cerr << "Failed 'add symbol' command: " << result << std::endl;
-
-//         return;
-//     }
-
-//     std::cerr << "Invalid 'add symbol' command: " << command << std::endl;
-// }
-
-// void DeleteSymbol(MarketManager& market, const std::string& command)
-// {
-//     static std::regex pattern("^delete symbol (\\d+)$");
-//     std::smatch match;
-
-//     if (std::regex_search(command, match, pattern))
-//     {
-//         uint32_t id = std::stoi(match[1]);
-
-//         ErrorCode result = market.DeleteSymbol(id);
-//         if (result != ErrorCode::OK)
-//             std::cerr << "Failed 'delete symbol' command: " << result << std::endl;
-
-//         return;
-//     }
-
-//     std::cerr << "Invalid 'delete symbol' command: " << command << std::endl;
-// }
-
-// void AddOrderBook(MarketManager& market, const std::string& command)
-// {
-//     static std::regex pattern("^add book (\\d+ \\d+ \\d+)$");
-//     std::smatch match;
-
-//     if (std::regex_search(command, match, pattern))
-//     {
-//         uint32_t id = std::stoi(match[1]);
-//         SymbolType type = SymbolType(std::stoi(match[2]));
-//         uint64_t multiplier = std::stoi(match[3]);
-//         char name[8];
-//         std::memset(name, 0, sizeof(name));
-
-//         Symbol symbol(id, name, type, multiplier);
-
-//         ErrorCode result = market.AddOrderBook(symbol);
-//         if (result != ErrorCode::OK)
-//             std::cerr << "Failed 'add book' command: " << result << std::endl;
-
-//         return;
-//     }
-
-//     std::cerr << "Invalid 'add book' command: " << command << std::endl;
-// }
+void printStatsNumber(MyMarketHandler& market_handler, const string& query)
+{
+    K count_orders = market_handler._kdb.readQuery(query);
+    cout << "Number of historical `"<< query << "`: " << (unsigned long)count_orders->j << endl;
+}
 
 int main(int argc, char **argv)
 {
@@ -482,6 +584,11 @@ int main(int argc, char **argv)
         std::cerr << "Failed 'add book' command: " << result << std::endl;
 
     market.EnableMatching();
+    
+    market_handler.addUser(0, "wonabru");
+    market_handler.addUser(1, "chris");
+
+    // exit(1);
 
     std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
 
@@ -537,460 +644,10 @@ int main(int argc, char **argv)
         auto ob_btcusdt = ob[1];
         cout << "Bids level size: " << ob_btcusdt->bids().size() << "; Asks level size: " << ob_btcusdt->asks().size() << endl;
     }
+    printStatsNumber(market_handler, "count prices");
+    printStatsNumber(market_handler, "count orders");
+    printStatsNumber(market_handler, "count transactions");
+    printStatsNumber(market_handler, "count positions");
     kclose(kdb);
     return 0;
 }
-
-/*
-
-void DeleteOrderBook(MarketManager& market, const std::string& command)
-{
-    static std::regex pattern("^delete book (\\d+)$");
-    std::smatch match;
-
-    if (std::regex_search(command, match, pattern))
-    {
-        uint32_t id = std::stoi(match[1]);
-
-        ErrorCode result = market.DeleteOrderBook(id);
-        if (result != ErrorCode::OK)
-            std::cerr << "Failed 'delete book' command: " << result << std::endl;
-
-        return;
-    }
-
-    std::cerr << "Invalid 'delete book' command: " << command << std::endl;
-}
-
-void AddMarketOrder(MarketManager& market, const std::string& command)
-{
-    static std::regex pattern("^add market (buy|sell) (\\d+) (\\d+) (\\d+)$");
-    std::smatch match;
-
-    if (std::regex_search(command, match, pattern))
-    {
-        uint64_t id = std::stoi(match[2]);
-        uint32_t symbol_id = std::stoi(match[3]);
-        uint64_t quantity = std::stoi(match[4]);
-
-        Order order;
-        if (match[1] == "buy")
-            order = Order::BuyMarket(id, symbol_id, quantity);
-        else if (match[1] == "sell")
-            order = Order::SellMarket(id, symbol_id, quantity);
-        else
-        {
-            std::cerr << "Invalid market order side: " << match[1] << std::endl;
-            return;
-        }
-
-        ErrorCode result = market.AddOrder(order);
-        if (result != ErrorCode::OK)
-            std::cerr << "Failed 'add market' command: " << result << std::endl;
-
-        return;
-    }
-
-    std::cerr << "Invalid 'add market' command: " << command << std::endl;
-}
-
-void AddSlippageMarketOrder(MarketManager& market, const std::string& command)
-{
-    static std::regex pattern("^add slippage market (buy|sell) (\\d+) (\\d+) (\\d+) (\\d+)$");
-    std::smatch match;
-
-    if (std::regex_search(command, match, pattern))
-    {
-        uint64_t id = std::stoi(match[2]);
-        uint32_t symbol_id = std::stoi(match[3]);
-        uint64_t quantity = std::stoi(match[4]);
-        uint64_t slippage = std::stoi(match[5]);
-
-        Order order;
-        if (match[1] == "buy")
-            order = Order::BuyMarket(id, symbol_id, quantity, slippage);
-        else if (match[1] == "sell")
-            order = Order::SellMarket(id, symbol_id, quantity, slippage);
-        else
-        {
-            std::cerr << "Invalid market order side: " << match[1] << std::endl;
-            return;
-        }
-
-        ErrorCode result = market.AddOrder(order);
-        if (result != ErrorCode::OK)
-            std::cerr << "Failed 'add slippage market' command: " << result << std::endl;
-
-        return;
-    }
-
-    std::cerr << "Invalid 'add slippage market' command: " << command << std::endl;
-}
-
-void AddLimitOrder(MarketManager& market,
-                    int is_buy,
-                    uint64_t id,
-                    uint32_t symbol_id,
-                    uint64_t price,
-                    uint64_t quantity)
-{
-
-        Order order;
-        if (is_buy == 1)
-            order = Order::BuyLimit(id, symbol_id, price, quantity);
-        else if (is_buy == 0)
-            order = Order::SellLimit(id, symbol_id, price, quantity);
-        else
-        {
-            std::cerr << "Invalid limit order side: " << is_buy << std::endl;
-            return;
-        }
-
-        ErrorCode result = market.AddOrder(order);
-        if (result != ErrorCode::OK)
-            std::cerr << "Failed 'add limit' command: " << result << std::endl;
-
-        return;
-}
-
-void AddIOCLimitOrder(MarketManager& market, const std::string& command)
-{
-    static std::regex pattern("^add ioc limit (buy|sell) (\\d+) (\\d+) (\\d+) (\\d+)$");
-    std::smatch match;
-
-    if (std::regex_search(command, match, pattern))
-    {
-        uint64_t id = std::stoi(match[2]);
-        uint32_t symbol_id = std::stoi(match[3]);
-        uint64_t price = std::stoi(match[4]);
-        uint64_t quantity = std::stoi(match[5]);
-
-        Order order;
-        if (match[1] == "buy")
-            order = Order::BuyLimit(id, symbol_id, price, quantity, OrderTimeInForce::IOC);
-        else if (match[1] == "sell")
-            order = Order::SellLimit(id, symbol_id, price, quantity, OrderTimeInForce::IOC);
-        else
-        {
-            std::cerr << "Invalid limit order side: " << match[1] << std::endl;
-            return;
-        }
-
-        ErrorCode result = market.AddOrder(order);
-        if (result != ErrorCode::OK)
-            std::cerr << "Failed 'add ioc limit' command: " << result << std::endl;
-
-        return;
-    }
-
-    std::cerr << "Invalid 'add ioc limit' command: " << command << std::endl;
-}
-
-void AddFOKLimitOrder(MarketManager& market, const std::string& command)
-{
-    static std::regex pattern("^add fok limit (buy|sell) (\\d+) (\\d+) (\\d+) (\\d+)$");
-    std::smatch match;
-
-    if (std::regex_search(command, match, pattern))
-    {
-        uint64_t id = std::stoi(match[2]);
-        uint32_t symbol_id = std::stoi(match[3]);
-        uint64_t price = std::stoi(match[4]);
-        uint64_t quantity = std::stoi(match[5]);
-
-        Order order;
-        if (match[1] == "buy")
-            order = Order::BuyLimit(id, symbol_id, price, quantity, OrderTimeInForce::FOK);
-        else if (match[1] == "sell")
-            order = Order::SellLimit(id, symbol_id, price, quantity, OrderTimeInForce::FOK);
-        else
-        {
-            std::cerr << "Invalid limit order side: " << match[1] << std::endl;
-            return;
-        }
-
-        ErrorCode result = market.AddOrder(order);
-        if (result != ErrorCode::OK)
-            std::cerr << "Failed 'add fok limit' command: " << result << std::endl;
-
-        return;
-    }
-
-    std::cerr << "Invalid 'add fok limit' command: " << command << std::endl;
-}
-
-void AddAONLimitOrder(MarketManager& market, const std::string& command)
-{
-    static std::regex pattern("^add aon limit (buy|sell) (\\d+) (\\d+) (\\d+) (\\d+)$");
-    std::smatch match;
-
-    if (std::regex_search(command, match, pattern))
-    {
-        uint64_t id = std::stoi(match[2]);
-        uint32_t symbol_id = std::stoi(match[3]);
-        uint64_t price = std::stoi(match[4]);
-        uint64_t quantity = std::stoi(match[5]);
-
-        Order order;
-        if (match[1] == "buy")
-            order = Order::BuyLimit(id, symbol_id, price, quantity, OrderTimeInForce::AON);
-        else if (match[1] == "sell")
-            order = Order::SellLimit(id, symbol_id, price, quantity, OrderTimeInForce::AON);
-        else
-        {
-            std::cerr << "Invalid limit order side: " << match[1] << std::endl;
-            return;
-        }
-
-        ErrorCode result = market.AddOrder(order);
-        if (result != ErrorCode::OK)
-            std::cerr << "Failed 'add aon limit' command: " << result << std::endl;
-
-        return;
-    }
-
-    std::cerr << "Invalid 'add aon limit' command: " << command << std::endl;
-}
-
-void AddStopOrder(MarketManager& market, const std::string& command)
-{
-    static std::regex pattern("^add stop (buy|sell) (\\d+) (\\d+) (\\d+) (\\d+)$");
-    std::smatch match;
-
-    if (std::regex_search(command, match, pattern))
-    {
-        uint64_t id = std::stoi(match[2]);
-        uint32_t symbol_id = std::stoi(match[3]);
-        uint64_t stop_price = std::stoi(match[4]);
-        uint64_t quantity = std::stoi(match[5]);
-
-        Order order;
-        if (match[1] == "buy")
-            order = Order::BuyStop(id, symbol_id, stop_price, quantity);
-        else if (match[1] == "sell")
-            order = Order::SellStop(id, symbol_id, stop_price, quantity);
-        else
-        {
-            std::cerr << "Invalid stop order side: " << match[1] << std::endl;
-            return;
-        }
-
-        ErrorCode result = market.AddOrder(order);
-        if (result != ErrorCode::OK)
-            std::cerr << "Failed 'add stop' command: " << result << std::endl;
-
-        return;
-    }
-
-    std::cerr << "Invalid 'add stop' command: " << command << std::endl;
-}
-
-void AddStopLimitOrder(MarketManager& market, const std::string& command)
-{
-    static std::regex pattern("^add stop-limit (buy|sell) (\\d+) (\\d+) (\\d+) (\\d+) (\\d+)$");
-    std::smatch match;
-
-    if (std::regex_search(command, match, pattern))
-    {
-        uint64_t id = std::stoi(match[2]);
-        uint32_t symbol_id = std::stoi(match[3]);
-        uint64_t stop_price = std::stoi(match[4]);
-        uint64_t price = std::stoi(match[5]);
-        uint64_t quantity = std::stoi(match[6]);
-
-        Order order;
-        if (match[1] == "buy")
-            order = Order::BuyStopLimit(id, symbol_id, stop_price, price, quantity);
-        else if (match[1] == "sell")
-            order = Order::SellStopLimit(id, symbol_id, stop_price, price, quantity);
-        else
-        {
-            std::cerr << "Invalid stop-limit order side: " << match[1] << std::endl;
-            return;
-        }
-
-        ErrorCode result = market.AddOrder(order);
-        if (result != ErrorCode::OK)
-            std::cerr << "Failed 'add stop-limit' command: " << result << std::endl;
-
-        return;
-    }
-
-    std::cerr << "Invalid 'add stop-limit' command: " << command << std::endl;
-}
-
-void AddTrailingStopOrder(MarketManager& market, const std::string& command)
-{
-    static std::regex pattern("^add trailing stop (buy|sell) (\\d+) (\\d+) (\\d+) (\\d+) (\\d+) (\\d+)$");
-    std::smatch match;
-
-    if (std::regex_search(command, match, pattern))
-    {
-        uint64_t id = std::stoi(match[2]);
-        uint32_t symbol_id = std::stoi(match[3]);
-        uint64_t stop_price = std::stoi(match[4]);
-        uint64_t quantity = std::stoi(match[5]);
-        int64_t trailing_distance = std::stoi(match[6]);
-        int64_t trailing_step = std::stoi(match[7]);
-
-        Order order;
-        if (match[1] == "buy")
-            order = Order::TrailingBuyStop(id, symbol_id, stop_price, quantity, trailing_distance, trailing_step);
-        else if (match[1] == "sell")
-            order = Order::TrailingSellStop(id, symbol_id, stop_price, quantity, trailing_distance, trailing_step);
-        else
-        {
-            std::cerr << "Invalid stop order side: " << match[1] << std::endl;
-            return;
-        }
-
-        ErrorCode result = market.AddOrder(order);
-        if (result != ErrorCode::OK)
-            std::cerr << "Failed 'add trailing stop' command: " << result << std::endl;
-
-        return;
-    }
-
-    std::cerr << "Invalid 'add trailing stop' command: " << command << std::endl;
-}
-
-void AddTrailingStopLimitOrder(MarketManager& market, const std::string& command)
-{
-    static std::regex pattern("^add trailing stop-limit (buy|sell) (\\d+) (\\d+) (\\d+) (\\d+) (\\d+) (\\d+) (\\d+)$");
-    std::smatch match;
-
-    if (std::regex_search(command, match, pattern))
-    {
-        uint64_t id = std::stoi(match[2]);
-        uint32_t symbol_id = std::stoi(match[3]);
-        uint64_t stop_price = std::stoi(match[4]);
-        uint64_t price = std::stoi(match[5]);
-        uint64_t quantity = std::stoi(match[6]);
-        int64_t trailing_distance = std::stoi(match[7]);
-        int64_t trailing_step = std::stoi(match[8]);
-
-        Order order;
-        if (match[1] == "buy")
-            order = Order::TrailingBuyStopLimit(id, symbol_id, stop_price, price, quantity, trailing_distance, trailing_step);
-        else if (match[1] == "sell")
-            order = Order::TrailingSellStopLimit(id, symbol_id, stop_price, price, quantity, trailing_distance, trailing_step);
-        else
-        {
-            std::cerr << "Invalid stop-limit order side: " << match[1] << std::endl;
-            return;
-        }
-
-        ErrorCode result = market.AddOrder(order);
-        if (result != ErrorCode::OK)
-            std::cerr << "Failed 'add trailing stop-limit' command: " << result << std::endl;
-
-        return;
-    }
-
-    std::cerr << "Invalid 'add trailing stop-limit' command: " << command << std::endl;
-}
-
-void ReduceOrder(MarketManager& market, const std::string& command)
-{
-    static std::regex pattern("^reduce order (\\d+) (\\d+)$");
-    std::smatch match;
-
-    if (std::regex_search(command, match, pattern))
-    {
-        uint64_t id = std::stoi(match[1]);
-        uint64_t quantity = std::stoi(match[2]);
-
-        ErrorCode result = market.ReduceOrder(id, quantity);
-        if (result != ErrorCode::OK)
-            std::cerr << "Failed 'reduce order' command: " << result << std::endl;
-
-        return;
-    }
-
-    std::cerr << "Invalid 'reduce order' command: " << command << std::endl;
-}
-
-void ModifyOrder(MarketManager& market, const std::string& command)
-{
-    static std::regex pattern("^modify order (\\d+) (\\d+) (\\d+)$");
-    std::smatch match;
-
-    if (std::regex_search(command, match, pattern))
-    {
-        uint64_t id = std::stoi(match[1]);
-        uint64_t new_price = std::stoi(match[2]);
-        uint64_t new_quantity = std::stoi(match[3]);
-
-        ErrorCode result = market.ModifyOrder(id, new_price, new_quantity);
-        if (result != ErrorCode::OK)
-            std::cerr << "Failed 'modify order' command: " << result << std::endl;
-
-        return;
-    }
-
-    std::cerr << "Invalid 'modify order' command: " << command << std::endl;
-}
-
-void MitigateOrder(MarketManager& market, const std::string& command)
-{
-    static std::regex pattern("^mitigate order (\\d+) (\\d+) (\\d+)$");
-    std::smatch match;
-
-    if (std::regex_search(command, match, pattern))
-    {
-        uint64_t id = std::stoi(match[1]);
-        uint64_t new_price = std::stoi(match[2]);
-        uint64_t new_quantity = std::stoi(match[3]);
-
-        ErrorCode result = market.MitigateOrder(id, new_price, new_quantity);
-        if (result != ErrorCode::OK)
-            std::cerr << "Failed 'mitigate order' command: " << result << std::endl;
-
-        return;
-    }
-
-    std::cerr << "Invalid 'mitigate order' command: " << command << std::endl;
-}
-
-void ReplaceOrder(MarketManager& market, const std::string& command)
-{
-    static std::regex pattern("^replace order (\\d+) (\\d+) (\\d+) (\\d+)$");
-    std::smatch match;
-
-    if (std::regex_search(command, match, pattern))
-    {
-        uint64_t id = std::stoi(match[1]);
-        uint64_t new_id = std::stoi(match[2]);
-        uint64_t new_price = std::stoi(match[3]);
-        uint64_t new_quantity = std::stoi(match[4]);
-
-        ErrorCode result = market.ReplaceOrder(id, new_id, new_price, new_quantity);
-        if (result != ErrorCode::OK)
-            std::cerr << "Failed 'replace order' command: " << result << std::endl;
-
-        return;
-    }
-
-    std::cerr << "Invalid 'replace order' command: " << command << std::endl;
-}
-
-void DeleteOrder(MarketManager& market, const std::string& command)
-{
-    static std::regex pattern("^delete order (\\d+)$");
-    std::smatch match;
-
-    if (std::regex_search(command, match, pattern))
-    {
-        uint64_t id = std::stoi(match[1]);
-
-        ErrorCode result = market.DeleteOrder(id);
-        if (result != ErrorCode::OK)
-            std::cerr << "Failed 'delete order' command: " << result << std::endl;
-
-        return;
-    }
-
-    std::cerr << "Invalid 'delete order' command: " << command << std::endl;
-}
-
-*/

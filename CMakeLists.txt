@@ -102,8 +102,8 @@ if(NOT CPPTRADER_MODULE)
   list(APPEND INSTALL_TARGETS_PDB cpptrader-tests)
 
   # CTest
-  enable_testing()
-  add_test(cpptrader-tests cpptrader-tests --durations yes --order lex)
+#  enable_testing()
+#  add_test(cpptrader-tests cpptrader-tests --durations yes --order lex)
 
   # Install
   install(TARGETS ${INSTALL_TARGETS}

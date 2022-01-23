@@ -34,7 +34,7 @@ int Kdbp::insertMultRow(const string &query, const string &table, K rows)
     K result;
 
     //sync
-    result = k(this->_kdb, S(query.c_str()), ks((S)table.c_str()), rows, (K)0);
+    result = k(-this->_kdb, S(query.c_str()), ks((S)table.c_str()), rows, (K)0);
     //async
     // result = k(-this->_kdb, query, (K)0);
 
@@ -51,7 +51,7 @@ int Kdbp::insertRow(const string &query, const string &table, K row)
     K result;
 
     //sync
-    result = k(this->_kdb, (S)query.c_str(), ks((S)table.c_str()), row, (K)0);
+    result = k(-this->_kdb, (S)query.c_str(), ks((S)table.c_str()), row, (K)0);
     //async
     // result = k(-this->_kdb, query, (K)0);
 
@@ -68,7 +68,7 @@ int Kdbp::deleteRow(const string &query, const string &table, K row)
     K result;
 
     //sync
-    result = k(this->_kdb, (S)query.c_str(), ks((S)table.c_str()), row, (K)0);
+    result = k(-this->_kdb, (S)query.c_str(), ks((S)table.c_str()), row, (K)0);
     //async
     // result = k(-this->_kdb, query, (K)0);
 
@@ -85,7 +85,7 @@ int Kdbp::executeQuery(const string &query)
     K result;
 
     //sync
-    result = k(this->_kdb, (S)query.c_str(), (K)0);
+    result = k(-this->_kdb, (S)query.c_str(), (K)0);
     //async
     // result = k(-this->_kdb, query, (K)0);
 
