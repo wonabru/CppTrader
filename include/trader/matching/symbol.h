@@ -43,10 +43,10 @@ struct Symbol
 
     uint64_t Multiplier;
 
-    uint64_t QuantityDividor;
+    uint64_t QuantityDivisor;
 
     Symbol() noexcept = default;
-    Symbol(uint32_t id, const char name[8], SymbolType type=SymbolType::SPOT, uint64_t multiplier = 1, uint64_t qtyDividor = 100) noexcept;
+    Symbol(uint32_t id, const char name[8], SymbolType type=SymbolType::SPOT, uint64_t multiplier = 1, uint64_t qtyDivisor = 100) noexcept;
     Symbol(const Symbol&) noexcept = default;
     Symbol(Symbol&&) noexcept = default;
     ~Symbol() noexcept = default;

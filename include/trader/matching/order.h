@@ -43,6 +43,16 @@ namespace CppTrader
             SELL = 1
         };
 
+        enum class OrderStatus : uint8_t
+        {
+            PENDING = 0,
+            CANCELLED = 1,
+            REPLACED = 2,
+            REJECTED = 3,
+            FILLED = 4,
+            PARTIALLY_FILLED
+        };
+
         template <class TOutputStream>
         TOutputStream &operator<<(TOutputStream &stream, OrderSide side);
 
@@ -207,6 +217,8 @@ namespace CppTrader
             uint64_t AccountId = 0;
 
             bool is_pending = false;
+
+            OrderStatus Status = OrderStatus::PENDING;
 
             Order() noexcept = default;
             Order(uint64_t id, uint32_t symbol, OrderType type, OrderSide side, uint64_t price, uint64_t stop_price, uint64_t quantity,

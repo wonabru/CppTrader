@@ -81,7 +81,7 @@ inline TOutputStream& operator<<(TOutputStream& stream, OrderTimeInForce tif)
     return stream;
 }
 
-inline Order::Order(uint64_t id, uint32_t symbol, OrderType type, OrderSide side, uint64_t price, uint64_t stop_price, uint64_t quantity, OrderTimeInForce tif, uint64_t max_visible_quantity, uint64_t slippage, int64_t trailing_distance, int64_t trailing_step) noexcept
+inline Order::Order(uint64_t id, uint32_t symbol, OrderType type,OrderSide side, uint64_t price, uint64_t stop_price, uint64_t quantity, OrderTimeInForce tif, uint64_t max_visible_quantity, uint64_t slippage, int64_t trailing_distance, int64_t trailing_step) noexcept
     : Id(id),
       SymbolId(symbol),
       Type(type),

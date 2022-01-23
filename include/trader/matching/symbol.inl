@@ -11,11 +11,11 @@
 namespace CppTrader {
 namespace Matching {
 
-inline Symbol::Symbol(uint32_t id, const char name[8], const SymbolType type, uint64_t multiplier, uint64_t qtyDividor) noexcept
+inline Symbol::Symbol(uint32_t id, const char name[8], const SymbolType type, uint64_t multiplier, uint64_t qtyDivisor) noexcept
     : Id(id), 
       Type(type),
       Multiplier(multiplier),
-      QuantityDividor(qtyDividor)
+      QuantityDivisor(qtyDivisor)
 
 {
     std::memcpy(Name, name, sizeof(Name));

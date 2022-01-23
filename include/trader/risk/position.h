@@ -54,7 +54,7 @@ namespace CppTrader
             //! Position side
             PositionSide Side;
             //! Position price
-            uint64_t AvgEntryPrice;
+            float AvgEntryPrice;
 
             //! Position quantity
             uint64_t Quantity;
@@ -72,8 +72,10 @@ namespace CppTrader
             float RealizedPnL;
             float UnrealizedPnL;
 
+            uint64_t FundingTime;
+
             Position() noexcept = default;
-            Position(uint64_t id, uint32_t symbol, PositionSide side, uint64_t price, uint64_t quantity,
+            Position(uint64_t id, uint32_t symbol, PositionSide side, float price, uint64_t quantity,
                      uint64_t accountId, uint64_t markPrice, uint64_t indexPrice,
                      float z=0, float c=0, float funding=0, float realizedPnL=0,
                      float unrealizedPnL=0) noexcept;
@@ -87,6 +89,7 @@ namespace CppTrader
             template <class TOutputStream>
             friend TOutputStream &operator<<(TOutputStream &stream, const Position &position);
             static double* CalculatePnL(const Position &position, const CppTrader::Matching::Order &order, uint64_t price, uint64_t quantity, const CppTrader::Matching::Symbol &symbol) noexcept;
+            static double CalculateFunding(const Position &position, const uint64_t timespan, const CppTrader::Matching::Symbol &symbol) noexcept;
             Position OrderExecuted(const Position &position, const CppTrader::Matching::Order &order, uint64_t price, uint64_t quantity, const CppTrader::Matching::Symbol &symbol) noexcept;
             Position ReadDbStructure(K data, Kdbp kdb) noexcept;
         };

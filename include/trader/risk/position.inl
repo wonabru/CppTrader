@@ -32,7 +32,7 @@ inline TOutputStream& operator<<(TOutputStream& stream, PositionSide side)
 inline Position::Position(uint64_t id, 
                           uint32_t symbol, 
                           PositionSide side, 
-                          uint64_t price, 
+                          float price, 
                           uint64_t quantity,
                           uint64_t accountId, 
                           uint64_t markPrice, 
@@ -78,13 +78,33 @@ inline TOutputStream& operator<<(TOutputStream& stream, const Position& position
     return stream;
 }
 
+inline double Position::CalculateFunding(const Position &position, const uint64_t timespan, const Symbol &symbol) noexcept
+{
+    double funding;
+    double q_pos = (int64_t)(position.Side == PositionSide::LONG?position.Quantity:-position.Quantity);
+    double div = (double)symbol.QuantityDivisor;
+    // double mult = (double)symbol.Multiplier;
+    double z = position.RiskZ;
+    double c = position.RiskC;
+
+    if (Symbol::IsInverse(symbol.Type))
+    {
+        //inverse futures
+        funding = q_pos / div * c / z * timespan / 60000.0;
+    }else{
+        funding = q_pos / div * c / z * timespan / 60000.0;
+    }
+
+    return funding;
+}
+
 inline double* Position::CalculatePnL(const Position &position, const CppTrader::Matching::Order &order, uint64_t price, uint64_t quantity, const Symbol &symbol) noexcept
 {
     double realized;
     double unrealized;
     double q = (int64_t)(order.Side == OrderSide::BUY?quantity:-quantity);
     double q_pos = (int64_t)(position.Side == PositionSide::LONG?position.Quantity:-position.Quantity);
-    double div = (double)symbol.QuantityDividor;
+    double div = (double)symbol.QuantityDivisor;
     double mult = (double)symbol.Multiplier;
     double avgEntryPrice;
 
@@ -92,10 +112,10 @@ inline double* Position::CalculatePnL(const Position &position, const CppTrader:
     {
         //inverse futures
         double tmp = (q_pos / position.AvgEntryPrice + q / price );
-        if (tmp)
-            avgEntryPrice = (q_pos + q) / div / tmp * mult;
+        if (tmp && position.AvgEntryPrice)
+            avgEntryPrice = (q_pos + q) / tmp;
         else
-            avgEntryPrice = 0;
+            avgEntryPrice = 1;
         unrealized = (q_pos + q) / div * (mult / avgEntryPrice - mult / price);
         if ((q_pos + q) * q_pos < 0)
             realized = q_pos / div * (mult / position.AvgEntryPrice - mult / price);
@@ -109,7 +129,7 @@ inline double* Position::CalculatePnL(const Position &position, const CppTrader:
         if (tmp)
             avgEntryPrice = (q_pos * position.AvgEntryPrice + q * price) / tmp;
         else
-            avgEntryPrice = 0;
+            avgEntryPrice = 1;
         unrealized = (q_pos + q) / div * (price - avgEntryPrice) / mult;
         if ((q_pos + q) * q_pos < 0)
             realized = q_pos / div * (price - position.AvgEntryPrice) / mult;
