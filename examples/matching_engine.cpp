@@ -5,8 +5,9 @@
     \date 16.08.2017
     \copyright MIT License
 */
-#define ORDER_INT_MAX 100000000UL
+#define ORDER_INT_MAX (uint64_t)0xfffffffffffffff
 #define CHUNK_SIZE 10000UL
+#define CHUNK_SIZE_POSITIONS 10000UL
 #define CLOCK_INTERVAL 10000UL
 
 #include "trader/matching/market_manager.h"
@@ -88,7 +89,7 @@ public:
 
     vector<Order> orders_chunk;
     vector<Order> transactions_chunk;
-    vector<Position> positions_chunk;
+    unordered_map<string, Position> positions_chunk;
     vector<uint64_t> executedPrice;
     vector<uint64_t> executedQuantity;
 
@@ -111,28 +112,34 @@ public:
 
     void flush_db()
     {
-        count_positions_chunk = 0UL;
-
-        K vals = position_prep(positions_chunk);
-        _kdb.insertMultRow("upsert", "positions", vals);
-        positions_chunk.clear();
-
-        count_orders_chunk = 0UL;
-        vector<uint64_t> prc; 
-        vector<uint64_t> qty;
-        prc.resize(orders_chunk.size());
-        qty.resize(orders_chunk.size());
-        vals = order_prep(orders_chunk, prc, qty);
-        _kdb.insertMultRow("insert", "orders", vals);
-        orders_chunk.clear();
-
-        count_transactions_chunk = 0UL;
-
-        vals = order_prep(orders_chunk, executedPrice, executedQuantity);
-        _kdb.insertMultRow("insert", "transactions", vals);
-        orders_chunk.clear();
-        executedQuantity.clear();
-        executedQuantity.clear();
+        
+        for (auto& it: usersStats)
+        {
+            K vals = position_prep(it.second);
+            _kdb.insertMultRow("upsert", "positions", vals);
+        }
+        
+        if (orders_chunk.size())
+        {
+            vector<uint64_t> prc; 
+            vector<uint64_t> qty;
+            prc.resize(orders_chunk.size());
+            qty.resize(orders_chunk.size());
+            K vals = order_prep(orders_chunk, prc, qty);
+            _kdb.insertMultRow("insert", "orders", vals);
+            orders_chunk.clear();
+            count_orders_chunk = 0UL;
+        }
+        
+        if (transactions_chunk.size())
+        {
+            K vals = order_prep(transactions_chunk, executedPrice, executedQuantity);
+            _kdb.insertMultRow("insert", "transactions", vals);
+            transactions_chunk.clear();
+            executedQuantity.clear();
+            executedQuantity.clear();
+            count_transactions_chunk = 0UL;
+        }
 
     }
 
@@ -150,15 +157,14 @@ public:
             pos.SymbolId = it.second.Id;
 
             usersStats[to_string(it.second.Id) + "+" + to_string(accountId)] = pos;
-            count_positions_chunk = CHUNK_SIZE + 1;
-            appendPositionsChunk("upsert", pos);
+            updatePosition(pos);
         }
     }
 
     void createTables()
     {
 
-        string _query = "meta symbols:([Id:`short$()] Time:`long$(); Name:`symbol$(); Type:`short$(); Multiplier:`int$())";
+        string _query = "meta symbols:([Id:`short$()] Time:`long$(); Name:`symbol$(); Type:`short$(); Multiplier:`long$(); QuantityDivisor:`long$())";
 
         _kdb.executeQuery(_query);
 
@@ -178,7 +184,7 @@ public:
 
         _query = "meta positions:([Id:`long$()] SymbolId:`short$(); AvgEntryPrice:`float$(); Quantity:`long$(); Side:`short$(); ";
         _query += "Time:`long$(); AccountId:`long$(); RiskZ:`float$(); RiskC:`float$(); Funding:`float$(); MarkPrice:`long$(); IndexPrice:`long$(); ";
-        _query += "RealizedPnL:`float$(); UnrealizedPnL:`float$())";
+        _query += "RealizedPnL:`float$(); UnrealizedPnL:`float$(); FundingTime:`long$())";
         _kdb.executeQuery(_query);
 
     }
@@ -193,12 +199,13 @@ protected:
         string _table = "symbols";
         time(&currentTime);
         ctime = localtime(&currentTime);
-        K row = knk(5,
+        K row = knk(6,
                     kh(symbol.Id),
                     kj(_kdb.castTime(ctime)),
                     ks(S(symbol.Name)),
                     kh((uint8_t)symbol.Type),
-                    kj(symbol.Multiplier));
+                    kj(symbol.Multiplier),
+                    kj(symbol.QuantityDivisor));
 
         _kdb.insertRow(_query, _table, row);
         symbols[symbol.Id] = symbol;
@@ -277,11 +284,11 @@ protected:
         // ct.start("mark price calc");
         auto _mark_price = calc_mark_price(order_book);
         // ct.end();
-        auto _now = std::chrono::steady_clock::now().time_since_epoch();
+        auto _now = std::chrono::system_clock::now().time_since_epoch();
         uint64_t _time = std::chrono::duration_cast<std::chrono::milliseconds>(_now).count();
 
         //TODO
-        uint64_t _index_price = 5000UL;
+        uint64_t _index_price = 10000UL;
         if (_mark_price)
         {
             // ct.start("funding calc");
@@ -312,7 +319,7 @@ protected:
                                    _mark_price,
                                    _index_price);
                 
-                appendPositionsChunk("upsert", pos);
+                updatePosition(pos);
         }
             // ct.end();
         }
@@ -328,12 +335,13 @@ protected:
         last_pos.RiskZ = riskZ;
         last_pos.MarkPrice = markPrice;
         last_pos.IndexPrice = indexPrice;
-        auto _now = std::chrono::steady_clock::now().time_since_epoch();
+        auto _now = std::chrono::system_clock::now().time_since_epoch();
         uint64_t _time = std::chrono::duration_cast<std::chrono::milliseconds>(_now).count();
         if (last_pos.FundingTime)
         {
             uint64_t _timespan = _time - last_pos.FundingTime;
-            last_pos.Funding += last_pos.CalculateFunding(last_pos, _timespan, symbols[symbolId]);
+            last_pos.Funding = last_pos.CalculateFunding(last_pos, _timespan, symbols[symbolId]);
+            //after 8h one should Funding /= 1000 * 3600 * 8 and put to realizedPnLFromFunding
         }else{
             last_pos.Funding = 0.0;
         }
@@ -347,8 +355,10 @@ protected:
         // std::cout << "Update order book: " << order_book << (top ? " - Top of the book!" : "") << std::endl;
         mark_price_db(order_book);
     }
-    // void onDeleteOrderBook(const OrderBook& order_book) override
-    // { std::cout << "Delete order book: " << order_book << std::endl; }
+    void onDeleteOrderBook(const OrderBook& order_book) override
+    { 
+        std::cout << "Delete order book: " << order_book << std::endl; 
+    }
 
     void onAddLevel(const OrderBook &order_book, const Level &level, bool top) override
     {
@@ -371,7 +381,8 @@ protected:
 
     K order_prep(const Order &order, uint64_t currentExecutedPrice, uint64_t currentExecutedQuantity)
     {
-        auto _time = (uint64_t)(std::chrono::steady_clock::now().time_since_epoch() / std::chrono::milliseconds(1));
+        auto _now = std::chrono::system_clock::now().time_since_epoch();
+        uint64_t _time = std::chrono::duration_cast<std::chrono::milliseconds>(_now).count();
 
         K val = knk(19,
                     kj(order.Id),
@@ -403,8 +414,8 @@ protected:
         {
             return order_prep(orders[0], currentExecutedPrice[0], currentExecutedQuantity[0]);
         }
-        auto _time = (uint64_t)(std::chrono::steady_clock::now().time_since_epoch() / std::chrono::milliseconds(1));
-
+        auto _now = std::chrono::system_clock::now().time_since_epoch();
+        uint64_t _time = std::chrono::duration_cast<std::chrono::milliseconds>(_now).count();
         vector<K> lists({ktn(KJ, orders.size()),
                       ktn(KH, orders.size()),
                       ktn(KJ, orders.size()),
@@ -472,9 +483,9 @@ protected:
 
     K position_prep(const Position &position)
     {
-        auto _time = (uint64_t)(std::chrono::steady_clock::now().time_since_epoch() / std::chrono::milliseconds(1));
-
-        K val = knk(14,
+        auto _now = std::chrono::system_clock::now().time_since_epoch();
+        uint64_t _time = std::chrono::duration_cast<std::chrono::milliseconds>(_now).count();
+        K val = knk(15,
                     kj(position.Id),
                     kh(position.SymbolId),
                     kf(position.AvgEntryPrice),
@@ -488,7 +499,8 @@ protected:
                     kj(position.MarkPrice),
                     kj(position.IndexPrice),
                     kf(position.RealizedPnL),
-                    kf(position.UnrealizedPnL));
+                    kf(position.UnrealizedPnL),
+                    kj(position.FundingTime));
         return val;
     }
 
@@ -498,8 +510,8 @@ protected:
         {
             return position_prep(positions[0]);
         }
-        auto _time = (uint64_t)(std::chrono::steady_clock::now().time_since_epoch() / std::chrono::milliseconds(1));
-
+        auto _now = std::chrono::system_clock::now().time_since_epoch();
+        uint64_t _time = std::chrono::duration_cast<std::chrono::milliseconds>(_now).count();
         vector<K> lists({ktn(KJ, positions.size()),
                       ktn(KH, positions.size()),
                       ktn(KJ, positions.size()),
@@ -513,7 +525,8 @@ protected:
                       ktn(KJ, positions.size()),
                       ktn(KJ, positions.size()),
                       ktn(KF, positions.size()),
-                      ktn(KF, positions.size())});
+                      ktn(KF, positions.size()),
+                      ktn(KJ, positions.size())});
 
         for (uint64_t i=0;i<positions.size();i++)
         {
@@ -531,8 +544,9 @@ protected:
             kJ(lists[11])[i] = positions[i].IndexPrice;
             kF(lists[12])[i] = positions[i].RealizedPnL;
             kF(lists[13])[i] = positions[i].UnrealizedPnL;
+            kJ(lists[14])[i] = positions[i].FundingTime;
         }
-        K vals = knk(14,
+        K vals = knk(15,
                     lists[0],
                     lists[1],
                     lists[2],
@@ -546,7 +560,8 @@ protected:
                     lists[10],
                     lists[11],
                     lists[12],
-                    lists[13]);
+                    lists[13],
+                    lists[14]);
         return vals;
     }
 
@@ -609,25 +624,37 @@ protected:
         }
         count_transactions_chunk = 0UL;
 
-        K vals = order_prep(orders_chunk, executedPrice, executedQuantity);
+        K vals = order_prep(transactions_chunk, executedPrice, executedQuantity);
         _kdb.insertMultRow("insert", "transactions", vals);
-        orders_chunk.clear();
+        transactions_chunk.clear();
         executedQuantity.clear();
         executedQuantity.clear();
     }
 
-    void appendPositionsChunk(const string& query, const Position &position)
+    void updatePosition(const Position &position)
     {
-        positions_chunk.push_back(position);
+        K val = position_prep(position);
+        _kdb.insertMultRow("upsert", "positions", val);
 
-        if (++count_positions_chunk < 1UL)
+    }
+
+    void appendUserStatsChunk(const string &userString)
+    {
+        K val;
+        positions_chunk[userString] = usersStats[userString];
+
+        if (++count_positions_chunk < CHUNK_SIZE_POSITIONS)
         {
             return;
         }
         count_positions_chunk = 0UL;
 
-        K vals = position_prep(positions_chunk);
-        _kdb.insertMultRow(query, "positions", vals);
+        for (auto& it: positions_chunk)
+        {
+            val = position_prep(it.second);
+            _kdb.insertMultRow("upsert", "positions", val);
+        }
+
         positions_chunk.clear();
     }
 
@@ -656,7 +683,7 @@ protected:
         curr_pos = last_pos.OrderExecuted(last_pos, order, price, quantity, symbols[order.SymbolId]);
         usersStats[_user_symbol] = curr_pos;
 
-        appendPositionsChunk("upsert", curr_pos);
+        appendUserStatsChunk(_user_symbol);
     }
     
 };
@@ -702,23 +729,23 @@ int main(int argc, char **argv)
     Order order;
     ErrorCode result;
     market_handler.createTables();
-    addSymbol(0, "BTCUSD", 15, 10, SymbolType::VANILLAPERP, market_handler, market);
-    addSymbol(1, "ETHUSD", 50, 100, SymbolType::INVERSEPERP, market_handler, market);
-    addSymbol(2, "RBWUSD", 100, 1, SymbolType::INVERSEFUT, market_handler, market);
+    addSymbol(0, "BTCUSD", 1000, 10, SymbolType::VANILLAPERP, market_handler, market);
+    // addSymbol(1, "ETHUSD", 50, 100, SymbolType::INVERSEPERP, market_handler, market);
+    // addSymbol(2, "RBWUSD", 100, 1, SymbolType::INVERSEFUT, market_handler, market);
     market.EnableMatching();
     
     market_handler.addUser(0, "wonabru");
-    market_handler.addUser(1, "chris");
-    market_handler.addUser(2, "rainbow");
+    // market_handler.addUser(1, "chris");
+    // market_handler.addUser(2, "rainbow");
 
-    std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
+    auto begin = std::chrono::system_clock::now();
 
     for (int i = 0; i < txn_no; i++)
     {
 
-        price = (int)(rand() * 10000.0 / RAND_MAX);
+        price = 9000 + (int)(rand() * 1000.0 / RAND_MAX);
         quantity = (int)(rand() * 1000.0 / RAND_MAX) + 1;
-        symbol = (int)(rand() * 3.0 / RAND_MAX);
+        symbol = 0;//(int)(rand() * 3.0 / RAND_MAX);
         order = Order::BuyLimit(id, symbol, price, quantity);
         account_id = (int)(rand() * 3.0 / RAND_MAX);
         order.AccountId = account_id;
@@ -726,9 +753,9 @@ int main(int argc, char **argv)
         if (result != ErrorCode::OK)
             std::cerr << "Failed 'add limit' command: " << result << std::endl;
         id++;
-        price = 10000 - (int)(rand() * 10000.0 / RAND_MAX);
+        price = 10000 + (int)(rand() * 1000.0 / RAND_MAX);
         quantity = (int)(rand() * 1000.0 / RAND_MAX) + 1;
-        symbol = (int)(rand() * 3.0 / RAND_MAX);
+        symbol = 0;//(int)(rand() * 3.0 / RAND_MAX);
         order = Order::SellLimit(id, symbol, price, quantity);
         account_id = (int)(rand() * 3.0 / RAND_MAX);
         order.AccountId = account_id;
@@ -736,8 +763,8 @@ int main(int argc, char **argv)
         if (result != ErrorCode::OK)
             std::cerr << "Failed 'add limit' command: " << result << std::endl;
         id++;
-        quantity = (int)(rand() * 10.0 / RAND_MAX) + 1;
-        symbol = (int)(rand() * 3.0 / RAND_MAX);
+        quantity = (int)(rand() * 100.0 / RAND_MAX) + 1;
+        symbol = 0;//(int)(rand() * 3.0 / RAND_MAX);
         order = Order::BuyMarket(id, symbol, quantity);
         account_id = (int)(rand() * 3.0 / RAND_MAX);
         order.AccountId = account_id;
@@ -745,7 +772,7 @@ int main(int argc, char **argv)
         if (result != ErrorCode::OK)
             std::cerr << "Failed 'add limit' command: " << result << std::endl;
         id++;
-        quantity = (int)(rand() * 10.0 / RAND_MAX) + 1;
+        quantity = (int)(rand() * 100.0 / RAND_MAX) + 1;
         symbol = 0;//(int)(rand() * 3.0 / RAND_MAX);
         order = Order::SellMarket(id, symbol, quantity);
         account_id = (int)(rand() * 3.0 / RAND_MAX);
@@ -756,7 +783,7 @@ int main(int argc, char **argv)
         id++;
     }
     market_handler.flush_db();
-    std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
+    auto end = std::chrono::system_clock::now();
 
     int64_t time_diff = std::chrono::duration_cast<std::chrono::nanoseconds>(end - begin).count();
     cout << "No of orders send: " << txn_no * 4 << endl;

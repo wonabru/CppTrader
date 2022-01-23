@@ -32,16 +32,17 @@ inline TOutputStream& operator<<(TOutputStream& stream, PositionSide side)
 inline Position::Position(uint64_t id, 
                           uint32_t symbol, 
                           PositionSide side, 
-                          float price, 
+                          double price, 
                           uint64_t quantity,
                           uint64_t accountId, 
                           uint64_t markPrice, 
                           uint64_t indexPrice,
-                          float z, 
-                          float c, 
-                          float funding, 
-                          float realizedPnL,
-                          float unrealizedPnL) noexcept
+                          double z, 
+                          double c, 
+                          double funding, 
+                          double realizedPnL,
+                          double unrealizedPnL,
+                          uint64_t fundingTime) noexcept
     : Id(id),
       SymbolId(symbol),
       Side(side),
@@ -54,7 +55,8 @@ inline Position::Position(uint64_t id,
       RiskC(c),
       Funding(funding),
       RealizedPnL(realizedPnL),
-      UnrealizedPnL(unrealizedPnL)
+      UnrealizedPnL(unrealizedPnL),
+      FundingTime(fundingTime)
 {
 }
 
@@ -73,7 +75,8 @@ inline TOutputStream& operator<<(TOutputStream& stream, const Position& position
         << "; RiskC=" << position.RiskC
         << "; Funding=" << position.Funding
         << "; RealizedPnL=" << position.RealizedPnL
-        << "; UnrealizedPnL=" << position.UnrealizedPnL;
+        << "; UnrealizedPnL=" << position.UnrealizedPnL
+        << "; FundingTime=" << position.FundingTime;
     stream << ")";
     return stream;
 }
@@ -81,16 +84,15 @@ inline TOutputStream& operator<<(TOutputStream& stream, const Position& position
 inline double Position::CalculateFunding(const Position &position, const uint64_t timespan, const Symbol &symbol) noexcept
 {
     double funding;
-    double q_pos = (int64_t)(position.Side == PositionSide::LONG?position.Quantity:-position.Quantity);
+    double q_pos = (double)(position.Side == PositionSide::LONG?position.Quantity:-1.0 * (double)position.Quantity);
     double div = (double)symbol.QuantityDivisor;
-    // double mult = (double)symbol.Multiplier;
     double z = position.RiskZ;
     double c = position.RiskC;
 
     if (Symbol::IsInverse(symbol.Type))
     {
         //inverse futures
-        funding = q_pos / div * c / z * timespan / 60000.0;
+        funding = q_pos / div * c / z * timespan / 60000.0;// each 1 minute
     }else{
         funding = q_pos / div * c / z * timespan / 60000.0;
     }
@@ -102,8 +104,9 @@ inline double* Position::CalculatePnL(const Position &position, const CppTrader:
 {
     double realized;
     double unrealized;
-    double q = (int64_t)(order.Side == OrderSide::BUY?quantity:-quantity);
-    double q_pos = (int64_t)(position.Side == PositionSide::LONG?position.Quantity:-position.Quantity);
+    //order is executed not enlarged 
+    double q = (double)(order.Side == OrderSide::BUY?quantity:-1.0 * (double)quantity);
+    double q_pos = (double)(position.Side == PositionSide::LONG?position.Quantity:-1.0 * (double)position.Quantity);
     double div = (double)symbol.QuantityDivisor;
     double mult = (double)symbol.Multiplier;
     double avgEntryPrice;
@@ -111,32 +114,33 @@ inline double* Position::CalculatePnL(const Position &position, const CppTrader:
     if (Symbol::IsInverse(symbol.Type))
     {
         //inverse futures
-        double tmp = (q_pos / position.AvgEntryPrice + q / price );
+        double tmp = (q_pos / position.AvgEntryPrice + q / price);
         if (tmp && position.AvgEntryPrice)
             avgEntryPrice = (q_pos + q) / tmp;
         else
-            avgEntryPrice = 1;
+            avgEntryPrice = 1.0F;
         unrealized = (q_pos + q) / div * (mult / avgEntryPrice - mult / price);
         if ((q_pos + q) * q_pos < 0)
             realized = q_pos / div * (mult / position.AvgEntryPrice - mult / price);
         else if (q_pos * q < 0)
             realized = q / div * (mult / position.AvgEntryPrice - mult / price);
         else
-            realized = 0;
+            realized = 0.0F;
 
     }else{
+        //for vanilla futures
         double tmp = (q_pos + q);
         if (tmp)
             avgEntryPrice = (q_pos * position.AvgEntryPrice + q * price) / tmp;
         else
-            avgEntryPrice = 1;
+            avgEntryPrice = 1.0F;
         unrealized = (q_pos + q) / div * (price - avgEntryPrice) / mult;
         if ((q_pos + q) * q_pos < 0)
             realized = q_pos / div * (price - position.AvgEntryPrice) / mult;
         else if (q_pos * q < 0)
             realized = q / div * (price - position.AvgEntryPrice) / mult;
         else
-            realized = 0; 
+            realized = 0.0F; 
 
     }
 
@@ -154,8 +158,8 @@ inline Position Position::OrderExecuted(const Position &position, const CppTrade
     pnls = Position::CalculatePnL(position, order, price, quantity, symbol);
 
     Position pos = Position(position);
-    int64_t q = order.Side == OrderSide::BUY?quantity:-quantity;
-    int64_t q_pos = position.Side == PositionSide::LONG?position.Quantity:-position.Quantity;
+    int64_t q = order.Side == OrderSide::BUY?quantity:-1 * (int64_t)quantity;
+    int64_t q_pos = position.Side == PositionSide::LONG?position.Quantity:-1 * (int64_t)position.Quantity;
     int64_t q_all = q + q_pos;
     pos.RealizedPnL += pnls[0];
     pos.UnrealizedPnL = pnls[1];
@@ -198,11 +202,11 @@ inline Position Position::ReadDbStructure(K data, Kdbp kdb) noexcept
                         (uint64_t)kdb.getitem(kK(rows)[6], 0)->j, 
                         (uint64_t)kdb.getitem(kK(rows)[10], 0)->j, 
                         (uint64_t)kdb.getitem(kK(rows)[11], 0)->j,
-                        (float)kdb.getitem(kK(rows)[7], 0)->f, 
-                        (float)kdb.getitem(kK(rows)[8], 0)->f, 
-                        (float)kdb.getitem(kK(rows)[9], 0)->f, 
-                        (float)kdb.getitem(kK(rows)[12], 0)->f,
-                        (float)kdb.getitem(kK(rows)[13], 0)->f);
+                        (double)kdb.getitem(kK(rows)[7], 0)->f, 
+                        (double)kdb.getitem(kK(rows)[8], 0)->f, 
+                        (double)kdb.getitem(kK(rows)[9], 0)->f, 
+                        (double)kdb.getitem(kK(rows)[12], 0)->f,
+                        (double)kdb.getitem(kK(rows)[13], 0)->f);
 
     return pos;
 

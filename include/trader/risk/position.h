@@ -54,7 +54,7 @@ namespace CppTrader
             //! Position side
             PositionSide Side;
             //! Position price
-            float AvgEntryPrice;
+            double AvgEntryPrice;
 
             //! Position quantity
             uint64_t Quantity;
@@ -65,20 +65,20 @@ namespace CppTrader
             uint64_t IndexPrice;
 
             //funding coeficients
-            float RiskZ;
-            float RiskC;
-            float Funding;
+            double RiskZ;
+            double RiskC;
+            double Funding;
 
-            float RealizedPnL;
-            float UnrealizedPnL;
+            double RealizedPnL;
+            double UnrealizedPnL;
 
             uint64_t FundingTime;
 
             Position() noexcept = default;
-            Position(uint64_t id, uint32_t symbol, PositionSide side, float price, uint64_t quantity,
+            Position(uint64_t id, uint32_t symbol, PositionSide side, double price, uint64_t quantity,
                      uint64_t accountId, uint64_t markPrice, uint64_t indexPrice,
-                     float z=0, float c=0, float funding=0, float realizedPnL=0,
-                     float unrealizedPnL=0) noexcept;
+                     double z=0, double c=0, double funding=0, double realizedPnL=0,
+                     double unrealizedPnL=0,uint64_t fundingTime=0UL) noexcept;
             Position(const Position &) noexcept = default;
             Position(Position &&) noexcept = default;
             ~Position() noexcept = default;

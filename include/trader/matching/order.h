@@ -10,7 +10,7 @@
 #define CPPTRADER_MATCHING_ORDER_H
 
 #ifndef ORDER_INT_MAX
-#define ORDER_INT_MAX 100000000UL
+#define ORDER_INT_MAX (uint64_t)0xfffffffffffffff
 #endif
 
 #include "errors.h"
